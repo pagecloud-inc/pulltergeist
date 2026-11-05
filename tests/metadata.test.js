@@ -43,7 +43,8 @@ test("opening details read native and legacy row metadata, not closed timestamps
 });
 
 test("settings accept only known booleans, preserving all defaults", () => {
-  assert.equal(settingsFields.length, 9);
+  assert.equal(settingsFields.length, 10);
+  assert.equal(defaultSettings.prewarm, false);
   assert.deepEqual(normalizeSettings(null), defaultSettings);
   assert.deepEqual(normalizeSettings({ enabled: "false", autoExpand: true, unknown: true }), { ...defaultSettings, autoExpand: true });
 });
@@ -96,9 +97,16 @@ test("HTML metadata reuses the same native-stack decoder and rejects wrong PRs",
 test("list hints preserve SHA fingerprints without trusting another repository", () => {
   const items = chainPulls();
   const dom = document(listHtml({ items, hints: true }));
-  assert.deepEqual(listHints(dom, repository).get("8"), { sha: items[0].sha, stackSize: 8, author: items[0].author, openedAt: items[0].openedAt });
+  assert.deepEqual(listHints(dom, repository).get("8"), { sha: items[0].sha, stackSize: 8, stackPosition: 8, author: items[0].author, openedAt: items[0].openedAt });
   assert.equal(listHints(dom, "other/repo").size, 0);
   assert.equal(listHints(document("<p>No payload</p>"), repository).size, 0);
+});
+
+test("native positions used for scheduling reject out-of-range and malformed hints", () => {
+  for (const stackPosition of [0, -1, 9, 1.5, "1", null]) {
+    const items = chainPulls().map(pull => ({ ...pull, stackPosition }));
+    assert.equal(listHints(document(listHtml({ items, hints: true })), repository).get("8").stackPosition, 0);
+  }
 });
 
 test("cache persists and reloads valid metadata, but rejects changed head SHAs", async () => {
@@ -128,6 +136,61 @@ test("cache preserves opening details across reloads without breaking old cache 
   await old.configure(true);
   assert.equal(old.get({ url: url(2) }).head, refs.head);
   assert.equal(old.get({ url: url(2) }).openedAt, null);
+});
+
+test("startup can reuse the settings/cache snapshot without a second storage read", async () => {
+  const local = storage();
+  let reads = 0;
+  const get = local.get;
+  local.get = async keys => { reads++; return get(keys); };
+  const cache = new MetadataCache(local);
+  await cache.configure(true, { metadata: { [url(1)]: { ...refs, time: Date.now() } } });
+  assert.equal(reads, 0);
+  assert.equal(cache.get({ url: url(1) }).head, refs.head);
+});
+
+test("cache clear and opt-out wait for an in-flight early write, discarding queued old writes", async () => {
+  for (const operation of ["clear", "disable"]) {
+    const local = storage();
+    const set = local.set;
+    let started;
+    let release;
+    const ready = new Promise(resolve => { started = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    let writes = 0;
+    local.set = async patch => {
+      if (patch.metadata && Object.keys(patch.metadata).length) { writes++; started(); await gate; }
+      await set(patch);
+    };
+    const cache = new MetadataCache(local);
+    await cache.configure(true);
+    cache.set({ url: url(1) }, refs);
+    const saving = cache.save();
+    await ready;
+    const queued = cache.save();
+    const removal = operation === "clear" ? cache.clear() : cache.configure(false);
+    release();
+    await Promise.all([saving, queued, removal]);
+    assert.equal(writes, 1);
+    assert.deepEqual((await local.get("metadata")).metadata, operation === "clear" ? {} : undefined);
+    assert.equal(cache.entries.size, operation === "clear" ? 0 : 1);
+  }
+});
+
+test("a failed early cache write does not prevent a later save", async () => {
+  const local = storage();
+  const set = local.set;
+  let fail = true;
+  local.set = async patch => {
+    if (fail) { fail = false; throw new Error("write failed"); }
+    await set(patch);
+  };
+  const cache = new MetadataCache(local);
+  await cache.configure(true);
+  cache.set({ url: url(1) }, refs);
+  await assert.rejects(cache.save(), /write failed/);
+  await cache.save();
+  assert.equal((await local.get("metadata")).metadata[url(1)].head, refs.head);
 });
 
 test("cache rejects expired, future-dated, and malformed stored records", async () => {
@@ -180,6 +243,53 @@ test("a cache write racing with another tab's opt-out removes the saved metadata
   assert.equal((await local.get("metadata")).metadata, undefined);
 });
 
+test("cross-tab saves merge under one lock instead of overwriting unrelated PRs", async () => {
+  const local = storage();
+  let pending = Promise.resolve();
+  const locks = { request(name, callback) {
+    assert.equal(name, "pulltergeist:metadata");
+    const task = pending.then(callback);
+    pending = task.catch(() => {});
+    return task;
+  } };
+  const first = new MetadataCache(local, locks);
+  const second = new MetadataCache(local, locks);
+  await Promise.all([first.configure(true), second.configure(true)]);
+  first.set({ url: url(1) }, refs);
+  second.set({ url: url(2) }, refs);
+  await Promise.all([first.save(), second.save()]);
+  assert.deepEqual(Object.keys((await local.get("metadata")).metadata).sort(), [url(1), url(2)]);
+});
+
+test("imported cache records preserve age, reject older observations, and still check SHA", () => {
+  const cache = new MetadataCache(storage());
+  const time = Date.now() - 1000;
+  const record = { ...refs, time };
+  assert.equal(cache.merge({ [url(1)]: record }).size, 1);
+  assert.equal(cache.entries.get(url(1)).time, time);
+  assert.equal(cache.merge({ [url(1)]: { ...record, time: time - 1, head: ref(repository, "old") } }).size, 0);
+  assert.equal(cache.get({ url: url(1), sha: refs.sha }).head, refs.head);
+  assert.equal(cache.get({ url: url(1), sha: "changed" }), null);
+  assert.equal(cache.merge({ [url(2)]: { ...record, time: Date.now() - 300001 } }).size, 0);
+});
+
+test("a remote clear prevents an old tab from restoring its pre-clear snapshot", async () => {
+  const local = storage();
+  const first = new MetadataCache(local);
+  const second = new MetadataCache(local);
+  await Promise.all([first.configure(true), second.configure(true)]);
+  second.set({ url: url(2) }, refs);
+  await first.clear();
+  await second.save();
+  assert.deepEqual((await local.get("metadata")).metadata, {});
+  const { metadataEpoch } = await local.get("metadataEpoch");
+  assert.equal(second.adoptEpoch(metadataEpoch), true);
+  assert.equal(second.get({ url: url(2) }), null);
+  second.set({ url: url(2) }, refs);
+  await second.save();
+  assert.equal((await local.get("metadata")).metadata[url(2)].head, refs.head);
+});
+
 test("cache is bounded and refresh removes both persistent and memory records", async () => {
   const local = storage();
   const cache = new MetadataCache(local);
@@ -192,5 +302,5 @@ test("cache is bounded and refresh removes both persistent and memory records", 
   assert.equal(Object.keys((await local.get("metadata")).metadata).length, 250);
   await cache.clear();
   assert.equal(cache.entries.size, 0);
-  assert.equal((await local.get("metadata")).metadata, undefined);
+  assert.deepEqual((await local.get("metadata")).metadata, {});
 });

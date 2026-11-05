@@ -67,7 +67,8 @@
     for (const script of document.querySelectorAll('script[data-target="react-app.embeddedData"]')) {
       if (script.closest(".markdown-body")) continue;
       try {
-        payloads.push(JSON.parse(script.textContent));
+        const payload = JSON.parse(script.textContent);
+        if (payload && typeof payload === "object") payloads.push(payload);
       } catch {
         // A malformed or unrelated payload is not branch metadata.
       }
@@ -100,11 +101,12 @@
     return base && head ? { base, head } : null;
   }
 
-  function metadataFromPage(document, repo, number) {
+  function metadataFromPage(document, repo, number, { embeddedOnly = false } = {}) {
     for (const payload of pagePayloads(document)) {
       if (!payload.payload?.pullRequestsLayoutRoute) continue;
       return metadataFromPayload(payload, repo, number);
     }
+    if (embeddedOnly) return [];
     const refs = parseRefs(document, repo);
     return refs ? [{ number: String(number), ...refs, sha: null }] : [];
   }
@@ -116,10 +118,45 @@
       return new Map(results.filter(item => item.repoNameWithOwner?.toLowerCase() === repo.toLowerCase())
         .map(item => [String(item.number), {
           sha: item.headSha || null, stackSize: item.stackSize || 0,
+          stackPosition: Number.isInteger(item.stackPosition) && item.stackPosition > 0 && item.stackPosition <= item.stackSize ? item.stackPosition : 0,
           ...openingDetails(item.author?.displayLogin, item.createdAt),
         }]));
     }
     return new Map();
+  }
+
+  function pullList(document, repo, baseUrl) {
+    const hints = listHints(document, repo);
+    const pulls = [];
+    for (const row of document.querySelectorAll('.js-issue-row, [data-listview-component="items-list"] > li')) {
+      const title = row.querySelector('[data-testid="listitem-title-link"], .js-navigation-open');
+      for (const anchor of title ? [title] : row.querySelectorAll("a[href]")) {
+        let url;
+        try { url = new URL(anchor.getAttribute("href"), baseUrl); } catch { continue; }
+        const match = url.pathname.match(/^\/([^/]+\/[^/]+)\/pull\/(\d+)$/);
+        if (url.origin !== "https://github.com" || match?.[1].toLowerCase() !== repo.toLowerCase()) continue;
+        url.hash = "";
+        url.search = "";
+        const hint = hints.get(match[2]);
+        pulls.push({ row, url: url.href, number: match[2], title: anchor.textContent.trim(), ...hint, ...rowOpeningDetails(row, hint) });
+        break;
+      }
+    }
+    const parents = new Map();
+    for (const pull of pulls) parents.set(pull.row.parentElement, (parents.get(pull.row.parentElement) || 0) + 1);
+    const list = [...parents].sort((a, b) => b[1] - a[1])[0]?.[0];
+    return { list, pulls: pulls.filter(pull => pull.row.parentElement === list) };
+  }
+
+  function prioritizePulls(pulls) {
+    const native = pulls.filter(pull => pull.stackSize > 1).sort((a, b) =>
+      (a.stackPosition || Infinity) - (b.stackPosition || Infinity) || b.stackSize - a.stackSize);
+    const remaining = pulls.filter(pull => !(pull.stackSize > 1));
+    for (let first = 0, last = remaining.length - 1; first <= last;) {
+      native.push(remaining[first++]);
+      if (first <= last) native.push(remaining[last--]);
+    }
+    return native;
   }
 
   function findStacks(pulls) {
@@ -168,7 +205,7 @@
     return stacks;
   }
 
-  const api = { ref, openingDetails, rowOpeningDetails, parseRefs, metadataFromPayload, metadataFromPage, listHints, findStacks };
+  const api = { ref, openingDetails, rowOpeningDetails, parseRefs, metadataFromPayload, metadataFromPage, listHints, pullList, prioritizePulls, findStacks };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else globalThis.Pulltergeist = api;
 })();

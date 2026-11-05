@@ -8,6 +8,10 @@ const lock = require("../package-lock.json");
 
 test("extension and package metadata use Pulltergeist branding", () => {
   assert.equal(manifest.name, "Pulltergeist");
+  assert.deepEqual(manifest.permissions, ["storage"]);
+  assert.equal(manifest.background, undefined);
+  assert.ok(manifest.content_scripts[0].js.includes("warming.js"));
+  assert.equal(manifest.content_scripts[0].run_at, "document_end");
   assert.equal(pkg.name, "pulltergeist");
   assert.equal(lock.name, pkg.name);
   assert.equal(lock.packages[""].name, pkg.name);

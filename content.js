@@ -1,9 +1,11 @@
 (() => {
-  const { findStacks, listHints, rowOpeningDetails, defaultSettings, normalizeSettings, MetadataCache, readMetadata, PullListView } = globalThis.Pulltergeist;
+  const { findStacks, pullList, prioritizePulls, defaultSettings, normalizeSettings, MetadataCache, readMetadata, PageMetadataLearner, ListPrewarmer, PullListView } = globalThis.Pulltergeist;
   const cache = new MetadataCache(chrome.storage.local);
+  const learner = new PageMetadataLearner(cache);
+  const prewarmer = new ListPrewarmer(cache, readMetadata, () => !current?.loading && !current?.rateLimited);
   let settings = { ...defaultSettings };
   let current = null;
-  let timer = null;
+  let frame = null;
   let initialized = false;
 
   function observe() {
@@ -29,34 +31,21 @@
   }
 
   function listPulls(repo) {
-    const hints = listHints(document, repo);
-    const pulls = [];
-    for (const row of document.querySelectorAll('.js-issue-row, [data-listview-component="items-list"] > li')) {
-      const title = row.querySelector('[data-testid="listitem-title-link"], .js-navigation-open');
-      for (const anchor of title ? [title] : row.querySelectorAll("a[href]")) {
-        const url = new URL(anchor.href, location.href);
-        const match = url.pathname.match(/^\/([^/]+\/[^/]+)\/pull\/(\d+)$/);
-        if (url.origin !== location.origin || match?.[1].toLowerCase() !== repo.toLowerCase()) continue;
-        url.hash = "";
-        url.search = "";
-        const hint = hints.get(match[2]);
-        const pull = { row, url: url.href, number: match[2], title: anchor.textContent.trim(), ...hint };
-        const details = rowOpeningDetails(row, hint);
-        const cached = cache.get(pull);
-        Object.assign(pull, { author: details.author || cached?.author || null, openedAt: details.openedAt || cached?.openedAt || null });
-        pulls.push(pull);
-        break;
-      }
+    const result = pullList(document, repo, location.href);
+    for (const pull of result.pulls) {
+      const cached = cache.get(pull);
+      pull.author ||= cached?.author || null;
+      pull.openedAt ||= cached?.openedAt || null;
     }
-    const parents = new Map();
-    for (const pull of pulls) parents.set(pull.row.parentElement, (parents.get(pull.row.parentElement) || 0) + 1);
-    const list = [...parents].sort((a, b) => b[1] - a[1])[0]?.[0];
-    return { list, pulls: pulls.filter(pull => pull.row.parentElement === list) };
+    return result;
+  }
+
+  function active(state) {
+    return current === state && !state.controller.signal.aborted && location.href === state.url;
   }
 
   function valid(state) {
-    return current === state && !state.controller.signal.aborted && location.href === state.url && state.list.isConnected
-      && state.pulls.every(pull => pull.row.parentElement === state.list);
+    return active(state) && state.list.isConnected && state.pulls.every(pull => pull.row.parentElement === state.list);
   }
 
   function paint(state) {
@@ -75,26 +64,28 @@
   function pendingPulls(state, requested) {
     const missingDetails = new Set(findStacks(state.pulls)
       .filter(({ root }) => !root.author || !root.openedAt).map(({ root }) => root));
-    return state.pulls.filter(pull => !requested.has(pull) && (!pull.done || missingDetails.has(pull)))
-      .sort((a, b) => (b.stackSize || 0) - (a.stackSize || 0));
+    const pending = state.pulls.filter(pull => !requested.has(pull) && (!pull.done || missingDetails.has(pull)));
+    return prioritizePulls(pending);
   }
 
   async function load(state) {
     const requested = new Set();
-    const active = new Set();
-    let probingStack = false;
+    const inFlight = new Set();
+    const probes = new Set();
+    let firstStackSaved = null;
     async function read(pull) {
+      const epoch = cache.epoch;
       try {
         const entries = await readMetadata(pull, state);
-        if (!valid(state)) return;
+        if (!active(state)) return;
         for (const entry of entries) {
           const target = state.pulls.find(candidate => candidate.number === entry.number);
           if (!target) continue;
-          cache.set(target, entry);
+          if (cache.epoch === epoch) cache.set(target, entry);
           hydrate(target, entry);
         }
       } catch (error) {
-        if (!valid(state)) return;
+        if (!active(state)) return;
         if (!pull.done) Object.assign(pull, { done: true, error: true });
         if (error.status === 429) {
           state.rateLimited = true;
@@ -104,28 +95,37 @@
         }
       }
       paint(state);
+      if (!firstStackSaved && state.stacks.length) {
+        firstStackSaved = cache.save().catch(error => {
+          if (valid(state)) state.view.showError(error);
+        });
+      }
     }
-    while (valid(state)) {
+    while (active(state)) {
       const pending = state.rateLimited ? [] : pendingPulls(state, requested);
-      while (active.size < 3 && pending.length) {
-        // One native-stack probe can fill many queued PRs. Use other slots for unrelated PRs.
-        const index = pending.findIndex(pull => !probingStack || !(pull.stackSize > 1));
+      const concurrency = state.fastAvailable ? 6 : 3;
+      while (inFlight.size < concurrency && pending.length) {
+        // Different sizes or the same position identify independent probes, not grouping relationships.
+        const index = pending.findIndex(pull => !(pull.stackSize > 1) || [...probes].every(probe =>
+          probe.stackSize !== pull.stackSize || (pull.stackPosition > 0 && pull.stackPosition === probe.stackPosition)));
         if (index === -1) break;
         const [pull] = pending.splice(index, 1);
         requested.add(pull);
         const probe = pull.stackSize > 1;
-        if (probe) probingStack = true;
+        if (probe) probes.add(pull);
         const task = read(pull).finally(() => {
-          active.delete(task);
-          if (probe) probingStack = false;
+          inFlight.delete(task);
+          probes.delete(pull);
         });
-        active.add(task);
+        inFlight.add(task);
       }
-      if (!active.size) break;
-      await Promise.race(active);
+      if (!inFlight.size) break;
+      await Promise.race(inFlight);
     }
-    if (!valid(state)) return;
+    if (!active(state)) return;
     try {
+      if (firstStackSaved) await firstStackSaved;
+      if (!active(state)) return;
       await cache.save();
     } catch (error) {
       state.view.showError(error);
@@ -139,6 +139,7 @@
   }
 
   async function refresh() {
+    prewarmer.invalidate();
     mutate(dispose);
     await cache.clear();
     scan(true);
@@ -146,17 +147,23 @@
 
   function scan(force = false) {
     if (!initialized) return;
-    const match = location.pathname.match(/^\/([^/]+\/[^/]+)\/pulls\/?$/);
+    if (prewarmer.source && prewarmer.source !== location.href) prewarmer.cancel();
+    if (learner.collect(document, location.href, settings.enabled)) void cache.save().catch(error => current?.view.showError(error));
+    const match = location.pathname.match(/^\/([^/]+\/[^/]+)\/pulls(?:\/[^/]+)?\/?$/);
     const { list, pulls } = match ? listPulls(match[1]) : { pulls: [] };
     if (list?.getAttribute("aria-busy") === "true") {
       mutate(dispose);
       return;
     }
-    if (!force && current?.url === location.href && current.view.toolbar.isConnected
-      && list === current.list && pulls.length === current.pulls.length
-      && pulls.every((pull, i) => pull.row === current.pulls[i].row && pull.url === current.pulls[i].url
-        && pull.title === current.pulls[i].title && pull.sha === current.pulls[i].sha
-        && pull.author === current.pulls[i].author && pull.openedAt === current.pulls[i].openedAt)) {
+    if (!force && current?.url === location.href && pulls.length === current.pulls.length
+      && pulls.every((pull, i) => pull.url === current.pulls[i].url && pull.title === current.pulls[i].title
+        && pull.sha === current.pulls[i].sha && pull.author === current.pulls[i].author && pull.openedAt === current.pulls[i].openedAt)) {
+      if (list !== current.list || !current.view.toolbar.isConnected || pulls.some((pull, i) => pull.row !== current.pulls[i].row)) {
+        mutate(() => {
+          current.view.rebind(list, pulls);
+          current.list = list;
+        });
+      }
       paint(current);
       return;
     }
@@ -171,20 +178,24 @@
       list, pulls, repo: match[1], url: location.href, controller: new AbortController(),
       stacks: [], expanded, loading: false,
       fastAvailable: settings.fastMetadata && list.matches('[data-listview-component="items-list"]'),
+      rateLimited: false,
     };
     state.loading = settings.enabled && pendingPulls(state, new Set()).length > 0;
     current = state;
     mutate(() => { state.view = new PullListView(list, pulls, setPreference, refresh, schedule); });
     paint(state);
-    if (state.loading) void load(state);
+    if (state.loading) {
+      prewarmer.cancel();
+      void load(state);
+    }
   }
 
   function schedule() {
-    if (timer !== null) return;
-    timer = setTimeout(() => {
-      timer = null;
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
       scan();
-    }, 80);
+    });
   }
 
   const observer = new MutationObserver(records => {
@@ -204,18 +215,39 @@
   document.addEventListener("turbo:render", schedule);
   window.addEventListener("popstate", schedule);
   document.addEventListener("turbo:before-cache", () => {
-    clearTimeout(timer);
-    timer = null;
+    prewarmer.cancel();
+    cancelAnimationFrame(frame);
+    frame = null;
     mutate(dispose);
   });
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !Object.keys(changes).some(key => key in defaultSettings)) return;
+    if (area !== "local") return;
+    if ("metadataEpoch" in changes && cache.adoptEpoch(changes.metadataEpoch.newValue)) prewarmer.invalidate();
+    if (changes.metadata && settings.cacheMetadata && cache.persistent) {
+      cache.merge(changes.metadata.newValue);
+      if (current && active(current)) {
+        let changed = false;
+        for (const pull of current.pulls) {
+          const hit = cache.get(pull);
+          if (hit && (!pull.done || pull.error || pull.base !== hit.base || pull.head !== hit.head
+            || (!pull.author && hit.author) || (!pull.openedAt && hit.openedAt))) {
+            hydrate(pull, hit);
+            changed = true;
+          }
+        }
+        if (changed) paint(current);
+      }
+    }
+    if (!Object.keys(changes).some(key => key in defaultSettings)) return;
     const previous = settings;
     const updates = Object.fromEntries(Object.entries(changes).map(([key, change]) => [key, change.newValue]));
     settings = normalizeSettings({ ...settings, ...updates });
     if (previous.cacheMetadata !== settings.cacheMetadata) {
-      void cache.configure(settings.cacheMetadata).catch(error => current?.view.showError(error));
+      void cache.configure(settings.cacheMetadata).then(() => {
+        if (settings.cacheMetadata) return cache.save();
+      }).catch(error => current?.view.showError(error));
     }
+    prewarmer.update(settings);
     if (current && previous.autoExpand !== settings.autoExpand) current.expanded.clear();
     if (previous.enabled !== settings.enabled || previous.fastMetadata !== settings.fastMetadata) scan(true);
     else if (current) paint(current);
@@ -223,12 +255,14 @@
 
   async function initialize() {
     try {
-      settings = normalizeSettings(await chrome.storage.local.get(defaultSettings));
-      await cache.configure(settings.cacheMetadata);
+      const stored = await chrome.storage.local.get({ ...defaultSettings, metadata: null, metadataEpoch: null });
+      settings = normalizeSettings(stored);
+      await cache.configure(settings.cacheMetadata, stored);
     } catch {
       cache.persistent = false;
     }
     initialized = true;
+    prewarmer.update(settings);
     observe();
     scan();
   }

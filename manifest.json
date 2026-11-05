@@ -16,8 +16,8 @@
   }],
   "content_scripts": [{
     "matches": ["https://github.com/*"],
-    "js": ["stacks.js", "settings.js", "metadata.js", "view.js", "content.js"],
+    "js": ["stacks.js", "settings.js", "metadata.js", "warming.js", "view.js", "content.js"],
     "css": ["content.css"],
-    "run_at": "document_idle"
+    "run_at": "document_end"
   }]
 }

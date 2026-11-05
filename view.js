@@ -35,14 +35,23 @@
       this.signature = null;
       this.referenceRow = null;
       this.metrics = null;
+      this.events = new AbortController();
+      const refreshLayout = () => {
+        if (!this.metrics || !this.list.isConnected) return;
+        this.signature = null;
+        onLayoutChange();
+      };
+      window.addEventListener("load", refreshLayout, { once: true, signal: this.events.signal });
+      document.fonts.addEventListener("loadingdone", refreshLayout, { signal: this.events.signal });
       this.resizeObserver = new ResizeObserver(() => {
         if (!this.metrics || !this.list.isConnected) return;
         const width = this.list.getBoundingClientRect().width;
         const measured = this.referenceRow && this.measureRow(this.referenceRow);
         if (Math.abs(width - this.metrics.width) < 0.5 && (!measured
           || (Math.abs(measured.height - this.metrics.height) < 0.5 && Math.abs(measured.inset - this.metrics.inset) < 0.5))) return;
-        this.signature = null;
-        onLayoutChange();
+        if (measured) {
+          this.applyMetrics({ ...measured, width });
+        } else refreshLayout();
       });
       this.resizeObserver.observe(list);
       this.toolbar = element("div", "pulltergeist-toolbar");
@@ -62,15 +71,14 @@
       const details = element("details", "pulltergeist-settings");
       const panel = element("div", "pulltergeist-settings-panel");
       details.append(element("summary", "", "Settings"), panel);
-      this.settingsEvents = new AbortController();
       document.addEventListener("click", event => {
         if (details.open && !event.composedPath().includes(details)) details.open = false;
-      }, { capture: true, signal: this.settingsEvents.signal });
+      }, { capture: true, signal: this.events.signal });
       document.addEventListener("keydown", event => {
         if (event.key !== "Escape" || !details.open) return;
         details.open = false;
         details.querySelector("summary").focus({ preventScroll: true });
-      }, { capture: true, signal: this.settingsEvents.signal });
+      }, { capture: true, signal: this.events.signal });
       for (const field of settingsFields) {
         const label = element("label", "pulltergeist-setting");
         const input = element("input");
@@ -122,6 +130,12 @@
       return { height: bounds.height, inset };
     }
 
+    applyMetrics(metrics) {
+      this.metrics = metrics;
+      this.list.style.setProperty("--pulltergeist-row-height", `${metrics.height}px`);
+      this.list.style.setProperty("--pulltergeist-icon-inset", `${metrics.inset}px`);
+    }
+
     matchNativeRows(stacks) {
       const members = new Set(stacks.flatMap(stack => stack.members.map(({ pull }) => pull.row)));
       const standalone = this.pulls.filter(({ row }) => !members.has(row));
@@ -135,9 +149,7 @@
         this.referenceRow = reference.row;
         this.resizeObserver.observe(this.referenceRow);
       }
-      this.metrics = { ...reference.metrics, width: this.list.getBoundingClientRect().width };
-      this.list.style.setProperty("--pulltergeist-row-height", `${this.metrics.height}px`);
-      this.list.style.setProperty("--pulltergeist-icon-inset", `${this.metrics.inset}px`);
+      this.applyMetrics({ ...reference.metrics, width: this.list.getBoundingClientRect().width });
     }
 
     clearGroups() {
@@ -152,6 +164,18 @@
       }
     }
 
+    rebind(list, pulls) {
+      this.resizeObserver.disconnect();
+      this.clearGroups();
+      this.pulls.forEach((pull, index) => { pull.row = pulls[index].row; });
+      this.list = list;
+      this.referenceRow = null;
+      this.metrics = null;
+      this.signature = null;
+      this.resizeObserver.observe(list);
+      if (this.toolbar.nextElementSibling !== list) list.before(this.toolbar);
+    }
+
     intact() {
       return this.toolbar.isConnected && this.groups.every(group => group.parentElement === this.list)
         && (!this.groups.length || (this.list.classList.contains("pulltergeist-list")
@@ -159,7 +183,7 @@
     }
 
     dispose() {
-      this.settingsEvents.abort();
+      this.events.abort();
       this.resizeObserver.disconnect();
       this.clearGroups();
       this.toolbar.remove();

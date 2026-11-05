@@ -12,7 +12,8 @@
     "test": "node --test",
     "icons": "node scripts/render-icons.js",
     "benchmark": "node scripts/benchmark.js",
-    "check": "node --check stacks.js && node --check settings.js && node --check metadata.js && node --check view.js && node --check content.js && node --check scripts/render-icons.js && node --check scripts/benchmark.js"
+    "profile": "node scripts/profile.js",
+    "check": "node --check stacks.js && node --check settings.js && node --check metadata.js && node --check warming.js && node --check view.js && node --check content.js && node --check scripts/render-icons.js && node --check scripts/benchmark.js && node --check scripts/profile.js"
   },
   "devDependencies": {
     "jsdom": "^27.0.0",

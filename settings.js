@@ -8,6 +8,7 @@
     { key: "compact", label: "Compact stack text", description: "Use smaller, inline stack text. Row height still follows GitHub.", default: false },
     { key: "progressive", label: "Show stacks while loading", description: "Group known relationships without waiting for every PR.", default: true },
     { key: "fastMetadata", label: "Lightweight GitHub requests", description: "Read small branch-data responses, with an HTML fallback.", default: true },
+    { key: "prewarm", label: "Prewarm PR lists", description: "After hovering or focusing a PR-list link, read that page and up to 6 PRs in the background. Requires grouping and local caching.", default: false },
     { key: "cacheMetadata", label: "Cache metadata across reloads", description: "Reuse locally saved PR metadata for 5 minutes. Turning off deletes this cache.", default: true },
   ];
   const defaults = Object.fromEntries(fields.map(field => [field.key, field.default]));

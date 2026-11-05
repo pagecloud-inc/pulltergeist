@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const path = require("node:path");
 const { chromium } = require("playwright");
-const { repo, origin, pulls, chainPulls, listHtml, pullPayload, pullHtml } = require("./fixtures.js");
+const { repo, origin, pulls, chainPulls, multipleStackPulls, manualStackPulls, listHtml, pullPayload, pullHtml } = require("./fixtures.js");
 
 async function fixture(context, options = {}) {
   const items = options.items || pulls;
@@ -25,37 +25,74 @@ async function fixture(context, options = {}) {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
     return result.result.value;
   }
+  async function waitForMetadata(minimum = 1) {
+    const result = await cdp.send("Runtime.evaluate", {
+      expression: `new Promise((resolve, reject) => {
+        const finish = metadata => {
+          if (!metadata || Object.keys(metadata).length < ${minimum}) return;
+          clearTimeout(timeout);
+          chrome.storage.onChanged.removeListener(changed);
+          resolve(metadata);
+        };
+        const changed = (changes, area) => { if (area === "local") finish(changes.metadata?.newValue); };
+        const timeout = setTimeout(() => {
+          chrome.storage.onChanged.removeListener(changed);
+          reject(new Error("Metadata was not persisted"));
+        }, 3000);
+        chrome.storage.onChanged.addListener(changed);
+        chrome.storage.local.get("metadata").then(result => finish(result.metadata));
+      })`,
+      contextId: world, awaitPromise: true, returnByValue: true,
+    });
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+    return result.result.value;
+  }
   const calls = [];
+  const prewarmLists = [];
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   let active = 0;
   let maxActive = 0;
+  let htmlActive = 0;
+  let maxHtmlActive = 0;
   await page.route(`${origin}/**`, async route => {
     const url = new URL(route.request().url());
     const match = url.pathname.match(/\/pull\/(\d+)(\/_layout)?$/);
     if (!match) {
+      if (/\/pulls(?:\/[^/]+)?\/?$/.test(url.pathname) && !route.request().isNavigationRequest()) prewarmLists.push(url.href);
       await route.fulfill({ contentType: "text/html", body: listHtml({ ...options, items }) });
       return;
     }
+    if (!match[2] && route.request().isNavigationRequest()) {
+      const item = items.find(pull => pull.number === Number(match[1]));
+      await route.fulfill({ contentType: "text/html", body: `<!doctype html><html><body><main><a id="nav" href="${repo}/pulls">Pull requests</a>${pullHtml(item, options.metadataItems || items)}</main></body></html>` });
+      return;
+    }
     calls.push(url.pathname);
+    const layout = !!match[2];
+    if (!layout) { htmlActive++; maxHtmlActive = Math.max(maxHtmlActive, htmlActive); }
     active++;
     maxActive = Math.max(maxActive, active);
     const item = items.find(pull => pull.number === Number(match[1]));
-    await new Promise(resolve => setTimeout(resolve, typeof options.delay === "function" ? options.delay(item) : options.delay || 20));
+    await new Promise(resolve => setTimeout(resolve, typeof options.delay === "function" ? options.delay(item, layout) : options.delay || 20));
     active--;
-    const layout = !!match[2];
-    const status = options.fail === item.number ? options.status || 404 : layout && options.noLayout ? 404 : 200;
+    if (!layout) htmlActive--;
+    const unsupported = typeof options.noLayout === "function" ? options.noLayout(item) : options.noLayout;
+    const failure = typeof options.fail === "function" ? options.fail(item, layout) : options.fail === item.number;
+    const status = failure ? options.status || 404 : layout && unsupported ? 404 : 200;
+    const payload = pullPayload(item, options.metadataItems || items);
+    if (options.layoutRefsOnly) delete payload.payload.pullRequestsLayoutRoute.stack;
     await route.fulfill({
       status, contentType: layout ? "application/json" : "text/html",
-      body: layout ? JSON.stringify(pullPayload(item, items)) : pullHtml(item, items),
+      body: layout ? JSON.stringify(payload) : pullHtml(item, options.metadataItems || items),
     }).catch(() => {});
   });
   await page.goto(origin);
   await worldReady;
   if (options.reset !== false) await storage("clear");
   if (options.settings) await storage("set", options.settings);
-  await page.goto(`${origin}${repo}/pulls`);
-  return { page, calls, errors, storage, maxActive: () => maxActive };
+  await page.goto(`${origin}${options.startPath || `${repo}/pulls`}`);
+  return { page, calls, prewarmLists, errors, storage, waitForMetadata, maxActive: () => maxActive, maxHtmlActive: () => maxHtmlActive };
 }
 
 async function ready(page) {
@@ -109,7 +146,7 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
         assert.equal(await page.locator("svg.pulltergeist-chevron, svg.pulltergeist-stack-icon").count(), 2);
         assert.equal(await page.locator(".pulltergeist-toggle").getAttribute("aria-expanded"), "false");
         assert.equal(calls.length, 4);
-        assert.ok(maxActive() <= 3);
+        assert.ok(maxActive() <= (legacy ? 3 : 6));
         if (!legacy) assert.ok(calls.every(url => url.endsWith("/_layout")));
 
         await page.locator(".pulltergeist-toggle").focus();
@@ -145,6 +182,188 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
     });
   }
 
+  await t.test("opened PR pages passively warm native stacks without extra requests", async () => {
+    const { page, calls, errors, waitForMetadata } = await fixture(context, { items: chainPulls(), hints: true, startPath: `${repo}/pull/8` });
+    try {
+      const metadata = await waitForMetadata(8);
+      assert.equal(calls.length, 0);
+      const observed = metadata[`${origin}${repo}/pull/8`].time;
+      await page.locator("main").evaluate(main => main.append(document.createElement("span")));
+      await page.waitForTimeout(40);
+      await page.goto(`${origin}${repo}/pulls`);
+      await ready(page);
+      assert.equal(calls.length, 0);
+      assert.equal(await page.locator(".pulltergeist-count").innerText(), "8 PRs");
+      assert.ok(observed <= Date.now());
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("a faster tab shares fresh results with a loading tab and skips its queued reads", async () => {
+    const items = manualStackPulls();
+    const first = await fixture(context, { items, hints: true, delay: 600 });
+    let second;
+    try {
+      second = await fixture(context, { items, hints: true, reset: false });
+      await ready(second.page);
+      await first.page.locator(".pulltergeist-group").waitFor();
+      assert.match(await first.page.locator(".pulltergeist-toolbar [role=status]").innerText(), /Finding/);
+      assert.equal(first.calls.length, 6);
+      await ready(first.page);
+      assert.equal(first.calls.length, 6);
+      assert.equal(await first.page.locator(".pulltergeist-count").innerText(), "3 PRs");
+      assert.deepEqual([...first.errors, ...second.errors], []);
+    } finally {
+      if (second) await second.page.close();
+      await first.page.close();
+    }
+  });
+
+  await t.test("passive learning honors cache opt-out and shared metadata rejects changed SHAs", async () => {
+    const first = await fixture(context, { items: chainPulls(), hints: true, startPath: `${repo}/pull/8`, settings: { cacheMetadata: false } });
+    try {
+      await first.page.waitForTimeout(60);
+      assert.equal((await first.storage("get", "metadata")).metadata, undefined);
+      assert.equal(first.calls.length, 0);
+    } finally { await first.page.close(); }
+    const items = chainPulls();
+    const loading = await fixture(context, { items, hints: true, delay: 300 });
+    let changed;
+    try {
+      const otherItems = items.map(pull => ({ ...pull, sha: "f".repeat(40) }));
+      changed = await fixture(context, { items: otherItems, hints: true, reset: false, startPath: `${repo}/pull/8` });
+      await changed.waitForMetadata(8);
+      await loading.page.waitForTimeout(40);
+      assert.equal(await loading.page.locator(".pulltergeist-group").count(), 0);
+      await ready(loading.page);
+      assert.equal(await loading.page.locator(".pulltergeist-count").innerText(), "8 PRs");
+      assert.deepEqual([...loading.errors, ...changed.errors], []);
+    } finally {
+      if (changed) await changed.page.close();
+      await loading.page.close();
+    }
+  });
+
+  await t.test("prewarming defaults off and cancels short hover or focus intent", async () => {
+    for (const prewarm of [false, true]) {
+      const { page, calls, prewarmLists, errors } = await fixture(context, { startPath: repo, settings: { prewarm } });
+      try {
+        await page.locator("#nav").hover();
+        if (prewarm) await page.mouse.move(900, 600);
+        await page.waitForTimeout(300);
+        if (prewarm) {
+          await page.locator("#nav").focus();
+          await page.locator("#nav").evaluate(anchor => anchor.blur());
+          await page.waitForTimeout(300);
+        }
+        assert.equal(calls.length, 0);
+        assert.equal(prewarmLists.length, 0);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    }
+  });
+
+  await t.test("opt-in hover and keyboard prewarming are bounded, query-preserving, and reused on navigation", async () => {
+    for (const intent of ["hover", "focus"]) {
+      const { page, calls, prewarmLists, errors, waitForMetadata } = await fixture(context, {
+        items: chainPulls(8, 17), hints: true, startPath: repo, settings: { prewarm: true },
+      });
+      try {
+        await page.locator("#nav")[intent]();
+        await waitForMetadata(13);
+        assert.equal(calls.length, 6);
+        assert.equal(prewarmLists.length, 1);
+        assert.equal(new URL(prewarmLists[0]).searchParams.get("q"), "is:pr author:me");
+        await page.goto(prewarmLists[0]);
+        await ready(page);
+        assert.equal(calls.length, 18);
+        assert.equal(await page.locator(".pulltergeist-count").innerText(), "8 PRs");
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    }
+  });
+
+  await t.test("prewarming stops on opt-out or disable and never follows foreign or non-list links", async () => {
+    for (const stop of ["cacheMetadata", "enabled", "prewarm"]) {
+      const { page, calls, prewarmLists, errors, storage } = await fixture(context, {
+        items: manualStackPulls(), hints: true, startPath: repo, settings: { prewarm: true }, delay: 200,
+      });
+      try {
+        await page.locator("#nav").focus();
+        await page.waitForTimeout(260);
+        await storage("set", { [stop]: false });
+        await page.waitForTimeout(300);
+        assert.ok(calls.length <= 1);
+        assert.equal(prewarmLists.length, 1);
+        const metadata = (await storage("get", "metadata")).metadata;
+        assert.equal(Object.keys(metadata || {}).length, 0);
+        if (stop === "cacheMetadata") assert.equal(metadata, undefined);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    }
+    const { page, calls, prewarmLists, errors } = await fixture(context, { startPath: repo, settings: { prewarm: true } });
+    try {
+      for (const href of [`${origin}${repo}/issues`, `${origin}${repo}/pull/1`, `https://other.example${repo}/pulls`]) {
+        await page.locator("#nav").evaluate((anchor, href) => { anchor.href = href; }, href);
+        await page.locator("#nav").focus();
+        await page.waitForTimeout(250);
+        await page.locator("#nav").evaluate(anchor => anchor.blur());
+      }
+      assert.equal(calls.length, 0);
+      assert.equal(prewarmLists.length, 0);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("prewarming uses sequential HTML fallback and obeys the lightweight setting", async () => {
+    for (const fastMetadata of [true, false]) {
+      const { page, calls, errors, waitForMetadata, maxHtmlActive } = await fixture(context, {
+        items: manualStackPulls(), hints: true, startPath: repo, noLayout: true, settings: { prewarm: true, fastMetadata },
+      });
+      try {
+        await page.locator("#nav").focus();
+        await waitForMetadata(6);
+        assert.equal(calls.filter(url => !url.endsWith("/_layout")).length, 6);
+        assert.equal(calls.filter(url => url.endsWith("/_layout")).length, fastMetadata ? 1 : 0);
+        assert.equal(maxHtmlActive(), 1);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    }
+  });
+
+  await t.test("prewarming stops on rate limits without background retry loops", async () => {
+    const { page, calls, errors } = await fixture(context, {
+      items: manualStackPulls(), hints: true, startPath: repo, settings: { prewarm: true }, fail: 25, status: 429,
+    });
+    try {
+      await page.locator("#nav").focus();
+      await page.waitForTimeout(350);
+      assert.equal(calls.length, 1);
+      await page.locator("#nav").evaluate(anchor => anchor.blur());
+      await page.locator("#nav").focus();
+      await page.waitForTimeout(300);
+      assert.equal(calls.length, 1);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("canonical author-filter routes group and prewarm like ordinary list URLs", async () => {
+    const { page, errors, prewarmLists } = await fixture(context, {
+      items: chainPulls(), hints: true, startPath: `${repo}/pulls/base-author`, settings: { prewarm: true },
+    });
+    try {
+      await ready(page);
+      assert.equal(await page.locator(".pulltergeist-count").innerText(), "8 PRs");
+      await page.goto(`${origin}${repo}`);
+      await page.locator("#nav").evaluate(anchor => { anchor.href = "/pagecloud/pagecloud/pulls/base-author"; });
+      const warmed = page.waitForResponse(response => response.url().endsWith("/pulls/base-author") && response.request().resourceType() === "fetch");
+      await page.locator("#nav").focus();
+      await warmed;
+      assert.equal(prewarmLists.length, 1);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
   await t.test("unreadable metadata leaves its PR alone", async () => {
     const { page, errors } = await fixture(context, { fail: 1 });
     try {
@@ -154,6 +373,137 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
       assert.match(await page.locator('.pulltergeist-toolbar [role="status"]').innerText(), /1 unreadable, left alone/);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
+  });
+
+  await t.test("unchanged React row replacement preserves in-flight requests and the settings panel", async () => {
+    const items = chainPulls(8, 5);
+    const { page, calls, errors } = await fixture(context, { items, hints: true, delay: 250 });
+    try {
+      await page.locator(".pulltergeist-settings summary").click();
+      const settings = await page.locator(".pulltergeist-settings").elementHandle();
+      await page.locator("#list").evaluate(list => list.replaceWith(list.cloneNode(true)));
+      await ready(page);
+      assert.equal(calls.length, 6);
+      assert.equal(new Set(calls).size, calls.length);
+      assert.equal(await settings.evaluate(element => element.isConnected && element.open), true);
+      assert.equal(await page.locator(".pulltergeist-group").count(), 1);
+      assert.equal(await page.locator(".pulltergeist-collapsed").count(), 8);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("manual stacks read both list ends early with six JSON or three HTML jobs", async () => {
+    for (const fastMetadata of [true, false]) {
+      const items = manualStackPulls();
+      const { page, calls, maxActive, errors } = await fixture(context, { items, hints: true, settings: { fastMetadata }, delay: 40 });
+      try {
+        await ready(page);
+        assert.equal(calls.length, 25);
+        assert.ok(calls[0].includes("/pull/25"));
+        assert.ok(calls[1].includes("/pull/1"));
+        assert.equal(maxActive(), fastMetadata ? 6 : 3);
+        assert.equal(await page.locator(".pulltergeist-title").innerText(), "Manual PR 1");
+        assert.equal(await page.locator(".pulltergeist-count").innerText(), "3 PRs");
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    }
+  });
+
+  await t.test("first useful stacks are cached before slow unrelated metadata finishes", async () => {
+    const { page, calls, waitForMetadata, errors } = await fixture(context, { delay: pull => pull.number === 3 ? 800 : 20 });
+    try {
+      await page.locator(".pulltergeist-group").waitFor();
+      const metadata = await waitForMetadata();
+      assert.ok(metadata[`${origin}${repo}/pull/1`]);
+      assert.match(await page.locator(".pulltergeist-toolbar [role=status]").innerText(), /Finding/);
+      calls.length = 0;
+      await page.reload();
+      await page.locator(".pulltergeist-group").waitFor();
+      await ready(page);
+      assert.deepEqual(calls, [`${repo}/pull/3/_layout`]);
+      assert.equal(await page.locator(".pulltergeist-count").innerText(), "3 PRs");
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("a late lightweight-endpoint failure never exceeds three concurrent HTML fallbacks", async () => {
+    const items = manualStackPulls();
+    const { page, maxActive, maxHtmlActive, errors } = await fixture(context, {
+      items, hints: true, noLayout: pull => ![25, 1, 24].includes(pull.number), delay: 30,
+    });
+    try {
+      await ready(page);
+      assert.ok(maxActive() <= 6);
+      assert.equal(maxHtmlActive(), 3);
+      assert.equal(await page.locator(".pulltergeist-count").innerText(), "3 PRs");
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("an HTML rate limit stops fallbacks already waiting for a slot", async () => {
+    const { page, calls, errors, maxHtmlActive } = await fixture(context, {
+      items: manualStackPulls(), hints: true, noLayout: true, status: 429,
+      fail: (pull, layout) => !layout && pull.number === 25,
+      delay: (pull, layout) => layout || pull.number === 25 ? 30 : 200,
+    });
+    try {
+      await ready(page);
+      assert.equal(calls.filter(url => url.endsWith("/_layout")).length, 6);
+      assert.equal(calls.filter(url => !url.endsWith("/_layout")).length, 3);
+      assert.equal(maxHtmlActive(), 3);
+      assert.equal(await visible(page, "#list > *"), 25);
+      assert.match(await page.locator(".pulltergeist-toolbar [role=status]").innerText(), /rate limit/);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("rate limiting at six JSON jobs stops the remaining queue", async () => {
+    const items = manualStackPulls();
+    const { page, calls, maxActive, errors } = await fixture(context, {
+      items, hints: true, fail: 23, status: 429, delay: pull => [25, 1, 24, 23].includes(pull.number) ? 30 : 200,
+    });
+    try {
+      await ready(page);
+      assert.ok(calls.length < items.length);
+      assert.equal(new Set(calls).size, calls.length);
+      assert.ok(maxActive() <= 6);
+      assert.equal(await page.locator("#issue_23").isVisible(), true);
+      assert.match(await page.locator(".pulltergeist-toolbar [role=status]").innerText(), /rate limit/);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("independent native stacks probe their bases in parallel, including filtered stacks", async () => {
+    const metadataItems = multipleStackPulls();
+    for (const [minimum, maximum] of [[1, 8], [3, 8], [1, 1]]) {
+      const items = metadataItems.filter(pull => !pull.stackPosition || (pull.stackPosition >= minimum && pull.stackPosition <= maximum));
+      const { page, calls, errors, maxActive } = await fixture(context, { items, metadataItems, hints: true, delay: 100 });
+      try {
+        await ready(page);
+        assert.equal(calls.length, 4);
+        assert.deepEqual(calls.slice(0, 3), [minimum, minimum + 8, minimum + 16].map(number => `${repo}/pull/${number}/_layout`));
+        assert.equal(maxActive(), 4);
+        assert.equal(await page.locator(".pulltergeist-group").count(), maximum > minimum ? 3 : 0);
+        assert.equal(await page.locator(".pulltergeist-collapsed").count(), maximum > minimum ? 3 * (maximum - minimum + 1) : 0);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    }
+  });
+
+  await t.test("missing native positions retain coalescing and hints alone cannot group PRs", async () => {
+    const scenarios = [
+      { items: multipleStackPulls().map(pull => ({ ...pull, stackPosition: undefined })), groups: 3, requests: 4 },
+      { items: chainPulls(0, 6).map(pull => ({ ...pull, stackSize: 6, stackPosition: 1 })), layoutRefsOnly: true, groups: 0, requests: 6 },
+    ];
+    for (const scenario of scenarios) {
+      const { page, calls, errors } = await fixture(context, { ...scenario, hints: true });
+      try {
+        await ready(page);
+        assert.equal(calls.length, scenario.requests);
+        assert.equal(await page.locator(".pulltergeist-group").count(), scenario.groups);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    }
   });
 
   await t.test("native stack metadata resolves eight PRs with one request", async () => {
@@ -167,7 +517,7 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
     } finally { await page.close(); }
   });
 
-  await t.test("compact stack summaries reuse opening details and fetch only a missing base date", async () => {
+  await t.test("base-first native probes supply opening details even without list timestamps", async () => {
     for (const hintDates of [true, false]) {
       const items = chainPulls();
       const { page, calls, errors } = await fixture(context, {
@@ -175,8 +525,7 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
       });
       try {
         await ready(page);
-        assert.equal(calls.length, hintDates ? 1 : 2);
-        if (!hintDates) assert.ok(calls[1].endsWith("/pull/1/_layout"));
+        assert.deepEqual(calls, [`${repo}/pull/1/_layout`]);
         assert.equal(await page.locator(".pulltergeist-author").innerText(), "author-1");
         assert.equal(await page.locator(".pulltergeist-opened").getAttribute("datetime"), "2026-01-01T12:00:00.000Z");
         assert.equal(await page.locator(".pulltergeist-meta").isVisible(), true);
@@ -197,10 +546,10 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
     const { page, calls, errors } = await fixture(context, { items, hints: true, density: "compact" });
     try {
       await ready(page);
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 1);
       assert.equal(await page.locator(".pulltergeist-opened").innerText(), "date unavailable");
       await page.waitForTimeout(200);
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 1);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });
@@ -236,13 +585,15 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
       await preference(page, "Compact stack text", true);
       await page.waitForSelector(".pulltergeist-compact");
       assert.equal(await page.locator(".pulltergeist-meta").isVisible(), false);
-      assert.equal(await page.getByRole("checkbox").count(), 13);
+      assert.equal(await page.getByRole("checkbox").count(), 14);
+      await preference(page, "Prewarm PR lists", true);
       const stored = await storage("get", null);
       assert.equal(stored.autoExpand, true);
       assert.equal(stored.baseFirst, false);
       assert.equal(stored.highlight, false);
       assert.equal(stored.showCounts, false);
       assert.equal(stored.compact, true);
+      assert.equal(stored.prewarm, true);
       calls.length = 0;
       await page.reload();
       await ready(page);
@@ -250,6 +601,8 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
       assert.equal(await page.locator('.pulltergeist-toggle[aria-expanded="true"]').count(), 1);
       assert.equal(await page.locator(".pulltergeist-member, .pulltergeist-count").count(), 0);
       assert.equal(await page.locator(".pulltergeist-compact").count(), 1);
+      await page.locator(".pulltergeist-settings summary").click();
+      assert.equal(await page.getByRole("checkbox", { name: "Prewarm PR lists", exact: true }).isChecked(), true);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });
@@ -294,7 +647,7 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
         await ready(page);
         assert.equal(await page.locator(".pulltergeist-group").count(), 1);
         assert.equal(calls.filter(url => !url.endsWith("/_layout")).length, 4);
-        assert.equal(calls.filter(url => url.endsWith("/_layout")).length, fastMetadata ? 3 : 0);
+        assert.equal(calls.filter(url => url.endsWith("/_layout")).length, fastMetadata ? 4 : 0);
         assert.deepEqual(errors, []);
       } finally { await page.close(); }
     }
@@ -327,7 +680,7 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
     const { page, calls, errors } = await fixture(context, { items, fail: items[0].number, status: 429 });
     try {
       await ready(page);
-      assert.ok(calls.length <= 3);
+      assert.ok(calls.length <= 6);
       assert.equal(await visible(page, "#list > *"), 21);
       assert.match(await page.locator('.pulltergeist-toolbar [role="status"]').innerText(), /rate limit/);
       assert.deepEqual(errors, []);
@@ -355,14 +708,14 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
   });
 
   await t.test("turning grouping off cancels loading and stops the queue", async () => {
-    const { page, calls, storage, errors } = await fixture(context, { delay: 250 });
+    const { page, calls, storage, errors } = await fixture(context, { items: manualStackPulls(), delay: 250 });
     try {
       await page.getByRole("button", { name: "Show flat list" }).click();
       await page.getByRole("button", { name: "Group stacks" }).waitFor();
       await page.waitForTimeout(350);
-      assert.ok(calls.length <= 3);
+      assert.ok(calls.length <= 6);
       assert.equal(await page.locator(".pulltergeist-group").count(), 0);
-      assert.equal(await visible(page, "#list > *"), 4);
+      assert.equal(await visible(page, "#list > *"), 25);
       assert.equal((await storage("get", "metadata")).metadata, undefined);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -555,14 +908,21 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
         await ready(page);
         assert.equal((await page.locator(".pulltergeist-group").boundingBox()).height, 67);
         const before = calls.length;
+        const header = await page.locator(".pulltergeist-group").elementHandle();
         await page.locator("#list").evaluate(list => list.style.setProperty("--fixture-row-height", "83px"));
         await page.setViewportSize({ width: 390, height: 700 });
         await page.waitForFunction(() => document.querySelector(".pulltergeist-group").getBoundingClientRect().height === 83);
+        if (items === pulls) assert.equal(await header.evaluate(element => element.isConnected), true);
         assert.equal(await page.locator(".pulltergeist-toggle").evaluate(button => button.scrollWidth <= button.clientWidth + 1), true);
         await page.locator(".pulltergeist-toggle").click();
         assert.equal((await page.locator(".pulltergeist-group").boundingBox()).height, 33);
         await page.locator(".pulltergeist-toggle").click();
         assert.equal((await page.locator(".pulltergeist-group").boundingBox()).height, 83);
+        if (items !== pulls) {
+          await page.locator("#list").evaluate(list => list.style.setProperty("--fixture-row-height", "91px"));
+          await page.evaluate(() => document.fonts.dispatchEvent(new Event("loadingdone")));
+          await page.waitForFunction(() => document.querySelector(".pulltergeist-group").getBoundingClientRect().height === 91);
+        }
         assert.equal(calls.length, before);
         assert.deepEqual(errors, []);
       } finally { await page.close(); }
