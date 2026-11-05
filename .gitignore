@@ -1,0 +1,5 @@
+node_modules/
+test-results/
+tasks/todo.md
+tasks/lessons.md
+.DS_Store

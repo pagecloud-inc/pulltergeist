@@ -1,0 +1,244 @@
+.pulltergeist-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block: 10px;
+  padding-inline: 16px;
+  font-size: 12px;
+  color: var(--fgColor-muted, #656d76);
+}
+.pulltergeist-toolbar strong {
+  color: var(--fgColor-default, #1f2328);
+}
+.pulltergeist-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.pulltergeist-logo {
+  flex-shrink: 0;
+}
+.pulltergeist-toolbar button, .pulltergeist-settings summary {
+  border: 1px solid var(--borderColor-default, #d1d9e0);
+  border-radius: 6px;
+  padding: 3px 8px;
+  color: var(--fgColor-default, #1f2328);
+  background: var(--bgColor-muted, #f6f8fa);
+  cursor: pointer;
+}
+.pulltergeist-list {
+  display: flex !important;
+  flex-direction: column !important;
+}
+.pulltergeist-row, .pulltergeist-group {
+  order: var(--pulltergeist-order);
+}
+.pulltergeist-group {
+  box-sizing: border-box;
+  align-self: stretch;
+  width: 100%;
+  height: var(--pulltergeist-row-height, 67px);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-bottom: 1px solid var(--borderColor-muted, #d1d9e0);
+  background: var(--bgColor-default, var(--color-canvas-default, #fff));
+}
+.pulltergeist-toggle {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 16px;
+  grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 0 16px 0 var(--pulltergeist-icon-inset, 16px);
+  text-align: start;
+  appearance: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--fgColor-default, #1f2328);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+.pulltergeist-toggle:hover {
+  background: var(--control-transparent-bgColor-hover, var(--bgColor-muted, #f6f8fa));
+}
+.pulltergeist-toggle:focus-visible, .pulltergeist-toolbar button:focus-visible, .pulltergeist-settings summary:focus-visible {
+  outline: 2px solid var(--focus-outlineColor, #0969da);
+  outline-offset: -2px;
+}
+.pulltergeist-chevron {
+  grid-column: 3;
+  grid-row: 2;
+  margin-block-start: 4px;
+  color: var(--fgColor-muted, #656d76);
+  transition: transform 100ms;
+}
+.pulltergeist-toggle[aria-expanded="true"] .pulltergeist-chevron {
+  transform: rotate(90deg);
+}
+.pulltergeist-summary {
+  grid-column: 2;
+  grid-row: 2;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+.pulltergeist-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pulltergeist-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: var(--base-text-weight-medium, 500);
+}
+.pulltergeist-count {
+  display: inline-flex;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  padding-inline: 6px;
+  border-radius: 2em;
+  background: var(--bgColor-neutral-muted, #818b981f);
+  color: var(--fgColor-muted, #656d76);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  vertical-align: middle;
+}
+.pulltergeist-meta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-block-start: 0;
+  color: var(--fgColor-muted, #656d76);
+  font-size: 12px;
+  line-height: 18px;
+}
+.pulltergeist-author {
+  font-weight: 500;
+}
+.pulltergeist-opened {
+  white-space: nowrap;
+}
+.pulltergeist-stack-icon {
+  grid-column: 1;
+  grid-row: 2;
+  margin-block-start: 4px;
+  color: var(--fgColor-muted, #656d76);
+}
+.pulltergeist-member {
+  box-shadow: inset 3px 0 var(--borderColor-accent-emphasis, #0969da);
+}
+.pulltergeist-collapsed {
+  display: none !important;
+}
+.pulltergeist-settings summary {
+  list-style: none;
+}
+.pulltergeist-settings summary::-webkit-details-marker {
+  display: none;
+}
+.pulltergeist-settings-panel {
+  position: absolute;
+  z-index: 100;
+  inset-inline-end: 16px;
+  top: calc(100% + 6px);
+  width: min(380px, calc(100vw - 64px));
+  max-height: 65vh;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--borderColor-default, #d1d9e0);
+  border-radius: 8px;
+  background: var(--bgColor-default, #fff);
+  color: var(--fgColor-default, #1f2328);
+  box-shadow: 0 8px 24px #0003;
+}
+.pulltergeist-setting {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 4px;
+  cursor: pointer;
+}
+.pulltergeist-setting input {
+  flex-shrink: 0;
+  margin-top: 3px;
+  accent-color: #8254d3;
+}
+.pulltergeist-setting-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+.pulltergeist-setting small, .pulltergeist-settings-panel p {
+  display: block;
+  font-weight: 400;
+  color: var(--fgColor-muted, #656d76);
+  line-height: 1.5;
+}
+.pulltergeist-settings-panel p {
+  margin: 8px 4px 0;
+}
+.pulltergeist-error {
+  color: var(--fgColor-danger, #d1242f);
+}
+.pulltergeist-list:is(.pulltergeist-compact, [data-density="compact"]) .pulltergeist-title {
+  font-size: 14px;
+  line-height: 21px;
+}
+.pulltergeist-list:is(.pulltergeist-compact, [data-density="compact"]) .pulltergeist-summary {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+}
+.pulltergeist-list:is(.pulltergeist-compact, [data-density="compact"]) .pulltergeist-heading {
+  flex: 0 1 auto;
+  flex-shrink: 0;
+  max-width: 65%;
+}
+.pulltergeist-list:is(.pulltergeist-compact, [data-density="compact"]) .pulltergeist-meta {
+  margin-block-start: 0;
+}
+.pulltergeist-group:has(> .pulltergeist-toggle[aria-expanded="true"]) {
+  height: 33px;
+}
+.pulltergeist-toggle[aria-expanded="true"] .pulltergeist-summary {
+  display: block;
+}
+.pulltergeist-toggle[aria-expanded="true"] .pulltergeist-heading {
+  max-width: none;
+}
+.pulltergeist-toggle[aria-expanded="true"] .pulltergeist-title {
+  font-size: 14px;
+  line-height: 20px;
+}
+.pulltergeist-toggle[aria-expanded="true"] .pulltergeist-meta {
+  display: none;
+}
+.pulltergeist-toggle[aria-expanded="true"] :is(.pulltergeist-chevron, .pulltergeist-stack-icon),
+.pulltergeist-list:is(.pulltergeist-compact, [data-density="compact"]) :is(.pulltergeist-chevron, .pulltergeist-stack-icon) {
+  margin-block-start: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulltergeist-chevron { transition: none; }
+}

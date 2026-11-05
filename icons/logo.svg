@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Pulltergeist: a friendly ghost with a pull-request branch</title>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#25183e"/>
+  <path d="M34 102V54c0-17 13-31 30-31s30 14 30 31v48L79 92l-15 10-15-10z" fill="#f5f0ff"/>
+  <ellipse cx="53" cy="49" rx="4" ry="6" fill="#25183e"/>
+  <ellipse cx="75" cy="49" rx="4" ry="6" fill="#25183e"/>
+  <g fill="none" stroke="#8254d3" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M54 70v14m0-7h11c7 0 10-4 10-8"/>
+    <circle cx="54" cy="67" r="4" fill="#f5f0ff"/>
+    <circle cx="54" cy="87" r="4" fill="#f5f0ff"/>
+    <circle cx="75" cy="66" r="4" fill="#f5f0ff"/>
+  </g>
+  <path d="M102 20v10m-5-5h10" fill="none" stroke="#c7a5ff" stroke-width="3" stroke-linecap="round"/>
+</svg>
