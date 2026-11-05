@@ -62,11 +62,15 @@
       const details = element("details", "pulltergeist-settings");
       const panel = element("div", "pulltergeist-settings-panel");
       details.append(element("summary", "", "Settings"), panel);
-      details.addEventListener("keydown", event => {
-        if (event.key !== "Escape") return;
+      this.settingsEvents = new AbortController();
+      document.addEventListener("click", event => {
+        if (details.open && !event.composedPath().includes(details)) details.open = false;
+      }, { capture: true, signal: this.settingsEvents.signal });
+      document.addEventListener("keydown", event => {
+        if (event.key !== "Escape" || !details.open) return;
         details.open = false;
-        details.querySelector("summary").focus();
-      });
+        details.querySelector("summary").focus({ preventScroll: true });
+      }, { capture: true, signal: this.settingsEvents.signal });
       for (const field of settingsFields) {
         const label = element("label", "pulltergeist-setting");
         const input = element("input");
@@ -155,6 +159,7 @@
     }
 
     dispose() {
+      this.settingsEvents.abort();
       this.resizeObserver.disconnect();
       this.clearGroups();
       this.toolbar.remove();

@@ -430,6 +430,63 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
     } finally { await page.close(); }
   });
 
+  await t.test("settings dismiss on outside clicks or Escape without swallowing other clicks", async () => {
+    const { page, errors } = await fixture(context);
+    try {
+      await ready(page);
+      const details = page.locator(".pulltergeist-settings");
+      const summary = details.locator("summary");
+      await summary.click();
+      await details.locator(".pulltergeist-settings-panel p").click();
+      assert.equal(await details.evaluate(element => element.open), true);
+      await preference(page, "Highlight stack members", false);
+      assert.equal(await details.evaluate(element => element.open), true);
+      await page.locator(".pulltergeist-brand").click();
+      assert.equal(await details.evaluate(element => element.open), false);
+      await summary.click();
+      await page.getByRole("checkbox", { name: "Select PR 3", exact: true }).click();
+      assert.equal(await details.evaluate(element => element.open), false);
+      assert.equal(await page.getByRole("checkbox", { name: "Select PR 3", exact: true }).isChecked(), true);
+      assert.equal(await page.getByRole("checkbox", { name: "Select PR 3", exact: true }).evaluate(element => document.activeElement === element), true);
+      await summary.click();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Escape");
+      assert.equal(await details.evaluate(element => element.open), false);
+      assert.equal(await summary.evaluate(element => document.activeElement === element), true);
+      await summary.click();
+      await page.getByRole("checkbox", { name: "Select PR 3", exact: true }).focus();
+      await page.keyboard.press("Escape");
+      assert.equal(await details.evaluate(element => element.open), false);
+      assert.equal(await summary.evaluate(element => document.activeElement === element), true);
+      await summary.click();
+      assert.equal(await details.evaluate(element => element.open), true);
+      await summary.click();
+      assert.equal(await details.evaluate(element => element.open), false);
+      await page.getByRole("checkbox", { name: "Select PR 3", exact: true }).focus();
+      await page.keyboard.press("Escape");
+      assert.equal(await page.getByRole("checkbox", { name: "Select PR 3", exact: true }).evaluate(element => document.activeElement === element), true);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("settings dismissal listeners are removed with their view", async () => {
+    const { page, errors } = await fixture(context);
+    try {
+      await ready(page);
+      await page.locator(".pulltergeist-settings summary").click();
+      await page.evaluate(() => {
+        const details = document.querySelector(".pulltergeist-settings");
+        window.removedSettings = details;
+        document.dispatchEvent(new Event("turbo:before-cache"));
+      });
+      await page.keyboard.press("Escape");
+      assert.equal(await page.evaluate(() => window.removedSettings.open), true);
+      await page.mouse.click(1, 1);
+      assert.equal(await page.evaluate(() => window.removedSettings.open), true);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
   await t.test("collapsed height and icon indentation match native selectable rows in both densities", async () => {
     const { page, calls, errors } = await fixture(context, { nativeLayout: true });
     try {

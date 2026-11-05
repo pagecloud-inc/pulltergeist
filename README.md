@@ -35,7 +35,7 @@ The **Pulltergeist** bar above the list contains:
 
 - **Show flat list / Group stacks:** disable or enable grouping and metadata requests.
 - **Refresh:** discard cached metadata and reread branch relationships.
-- **Settings:** change local preferences. Escape closes the settings panel.
+- **Settings:** change local preferences. Click outside to dismiss, or press Escape to close and return focus to Settings.
 
 ## Settings
 
