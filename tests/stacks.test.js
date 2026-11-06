@@ -5,7 +5,7 @@ const { ref, parseRefs, findStacks } = require("../stacks.js");
 
 const repo = "pagecloud/pagecloud";
 const branch = name => ref(repo, name);
-const pull = (number, base, head) => ({ number, base: branch(base), head: branch(head) });
+const pull = (number, base, head) => ({ number, base: branch(base), head: branch(head), defaultRef: branch("staging") });
 const parse = html => parseRefs(new JSDOM(html).window.document, repo);
 
 function payload(overrides = {}) {
@@ -87,6 +87,39 @@ test("does not guess across missing parents, unreadable PRs, or duplicate heads"
 test("leaves self-links and cycles untouched", () => {
   assert.deepEqual(findStacks([pull(1, "a", "a")]), []);
   assert.deepEqual(findStacks([pull(1, "a", "b"), pull(2, "b", "a"), pull(3, "b", "c")]), []);
+});
+
+test("a default-branch deploy cannot absorb ordinary PRs or real feature stacks", () => {
+  const deploy = pull(99, "master", "staging");
+  const features = Array.from({ length: 21 }, (_, i) => pull(i + 1, "staging", `feature-${i + 1}`));
+  const followup = pull(22, "feature-1", "followup");
+  const visible = [deploy, ...features, followup, pull(23, "off-page", "other"), pull(24, "off-page", "another")];
+  visible.forEach(item => { item.defaultRef = branch("staging"); });
+  const stacks = findStacks(visible);
+  assert.deepEqual(stacks.map(stack => stack.members.map(({ pull }) => pull.number)), [[1, 22]]);
+});
+
+test("default-branch PRs are boundaries in both directions without banning branch names", () => {
+  const release = pull(1, "production", "master");
+  const deploy = pull(2, "master", "staging");
+  const feature = pull(3, "staging", "main");
+  const child = pull(4, "main", "next");
+  for (const item of [release, deploy, feature, child]) item.defaultRef = branch("staging");
+  assert.deepEqual(findStacks([release, deploy, feature, child]).map(stack => stack.members.map(({ pull }) => pull.number)), [[3, 4]]);
+});
+
+test("default-branch identity remains repository-qualified and branch-case sensitive", () => {
+  const root = pull(1, "main", "Staging");
+  const child = pull(2, "Staging", "feature");
+  root.defaultRef = branch("staging");
+  child.defaultRef = ref("other/repo", "Staging");
+  assert.equal(findStacks([root, child]).length, 1);
+});
+
+test("unknown default branches leave rows flat instead of guessing through an integration branch", () => {
+  const visible = [pull(1, "master", "staging"), pull(2, "staging", "feature"), pull(3, "feature", "next")];
+  visible.forEach(item => { delete item.defaultRef; });
+  assert.deepEqual(findStacks(visible), []);
 });
 
 test("supports multiple independent stacks", () => {

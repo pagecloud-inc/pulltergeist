@@ -34,6 +34,7 @@
     const result = pullList(document, repo, location.href);
     for (const pull of result.pulls) {
       const cached = cache.get(pull);
+      pull.defaultRef ||= cached?.defaultRef || null;
       pull.author ||= cached?.author || null;
       pull.openedAt ||= cached?.openedAt || null;
     }
@@ -57,6 +58,7 @@
   function hydrate(pull, refs) {
     Object.assign(pull, {
       base: refs.base, head: refs.head, done: true, error: false,
+      defaultRef: pull.defaultRef || refs.defaultRef || null,
       author: pull.author || refs.author || null, openedAt: pull.openedAt || refs.openedAt || null,
     });
   }
@@ -65,6 +67,9 @@
     const missingDetails = new Set(findStacks(state.pulls)
       .filter(({ root }) => !root.author || !root.openedAt).map(({ root }) => root));
     const pending = state.pulls.filter(pull => !requested.has(pull) && (!pull.done || missingDetails.has(pull)));
+    if (!pending.length && !requested.size && !state.pulls.some(pull => pull.defaultRef)) {
+      return prioritizePulls(state.pulls).slice(0, 1);
+    }
     return prioritizePulls(pending);
   }
 
@@ -157,7 +162,7 @@
     }
     if (!force && current?.url === location.href && pulls.length === current.pulls.length
       && pulls.every((pull, i) => pull.url === current.pulls[i].url && pull.title === current.pulls[i].title
-        && pull.sha === current.pulls[i].sha && pull.author === current.pulls[i].author && pull.openedAt === current.pulls[i].openedAt)) {
+        && pull.sha === current.pulls[i].sha && pull.defaultRef === current.pulls[i].defaultRef && pull.author === current.pulls[i].author && pull.openedAt === current.pulls[i].openedAt)) {
       if (list !== current.list || !current.view.toolbar.isConnected || pulls.some((pull, i) => pull.row !== current.pulls[i].row)) {
         mutate(() => {
           current.view.rebind(list, pulls);
@@ -230,7 +235,7 @@
         for (const pull of current.pulls) {
           const hit = cache.get(pull);
           if (hit && (!pull.done || pull.error || pull.base !== hit.base || pull.head !== hit.head
-            || (!pull.author && hit.author) || (!pull.openedAt && hit.openedAt))) {
+            || (!pull.defaultRef && hit.defaultRef) || (!pull.author && hit.author) || (!pull.openedAt && hit.openedAt))) {
             hydrate(pull, hit);
             changed = true;
           }

@@ -29,7 +29,7 @@ Pulltergeist connects PRs when one PR's base branch matches another PR's head br
 - GitHub's comfortable/compact density, filters, sorting, pagination, and empty results are handled automatically. Expansion and density changes do not refetch metadata.
 - Enter and Space toggle a focused header. Long titles truncate visually; full titles and opening details remain available through tooltips and accessible labels.
 
-Only PRs on the **current filtered page** are grouped. Pulltergeist does not crawl other list pages; optional prewarming can read a linked target page before you navigate there. Fork identity and branch-name case matter; title similarity and shared default branches do not imply a stack.
+Only PRs on the **current filtered page** are grouped. Pulltergeist does not crawl other list pages; optional prewarming can read a linked target page before you navigate there. Fork identity and branch-name case matter; title similarity and shared default branches do not imply a stack. A PR whose head is the repository's default branch, such as a deployment promoting it to production, remains standalone. It cannot become the parent of every feature PR targeting that default branch.
 
 The **Pulltergeist** bar above the list contains:
 
@@ -110,6 +110,7 @@ Cache entries are valid for five minutes and capped at 250 PRs. Expired entries 
 - Retargeting without changing a head SHA can leave cached relationships stale for up to five minutes. Use **Refresh** after retargeting.
 - Rows are visually ordered with CSS rather than moved out of GitHub's React tree. Native keyboard-list navigation follows its original DOM order.
 - Missing opening dates are shown as **date unavailable**, never guessed.
+- Grouping requires verified repository default-branch metadata. If it is unavailable, rows stay flat. Old cache records can reuse the current list's repository metadata; legacy views may need one metadata read to recover that context.
 
 ## Development
 

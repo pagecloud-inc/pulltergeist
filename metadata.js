@@ -5,7 +5,9 @@
 
   function validEntry(entry, now = Date.now()) {
     if (!entry || !Number.isFinite(entry.time) || now - entry.time < 0 || now - entry.time >= ttl) return false;
-    for (const value of [entry.base, entry.head]) {
+    const refs = [entry.base, entry.head];
+    if (entry.defaultRef != null) refs.push(entry.defaultRef);
+    for (const value of refs) {
       try {
         const pair = JSON.parse(value);
         if (!Array.isArray(pair) || pair.length !== 2 || !pair.every(part => typeof part === "string" && part.length)) return false;
@@ -86,6 +88,7 @@
       this.entries.delete(pull.url);
       this.entries.set(pull.url, {
         base: refs.base, head: refs.head, sha: refs.sha || null, time: Date.now(),
+        defaultRef: pull.defaultRef || refs.defaultRef || null,
         ...core.openingDetails(pull.author || refs.author, pull.openedAt || refs.openedAt),
       });
       this.prune();

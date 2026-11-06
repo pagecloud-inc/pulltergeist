@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { JSDOM } = require("jsdom");
-const { ref, openingDetails, rowOpeningDetails, metadataFromPayload, metadataFromPage, listHints } = require("../stacks.js");
+const { ref, openingDetails, rowOpeningDetails, metadataFromPayload, metadataFromPage, listHints, pullList } = require("../stacks.js");
 const { MetadataCache } = require("../metadata.js");
 const { normalizeSettings, defaultSettings, settingsFields } = require("../settings.js");
 const { repo, origin, chainPulls, listHtml, pullPayload } = require("./fixtures.js");
@@ -107,6 +107,31 @@ test("native positions used for scheduling reject out-of-range and malformed hin
     const items = chainPulls().map(pull => ({ ...pull, stackPosition }));
     assert.equal(listHints(document(listHtml({ items, hints: true })), repository).get("8").stackPosition, 0);
   }
+});
+
+test("default-branch refs come from matching repositories in list and PR payloads", () => {
+  const items = chainPulls();
+  const entries = metadataFromPayload(pullPayload(items[0], items), repository, 8);
+  assert.ok(entries.every(entry => entry.defaultRef === ref(repository, "staging")));
+  const list = document(listHtml({ items, hints: true, defaultBranch: "trunk" }));
+  assert.ok(pullList(list, repository, `${origin}${repo}/pulls`).pulls.every(pull => pull.defaultRef === ref(repository, "trunk")));
+  const script = list.querySelector("script");
+  const payload = JSON.parse(script.textContent);
+  payload.payload.repoPullsDashboardLayoutRoute.repository.ownerLogin = "other";
+  script.textContent = JSON.stringify(payload);
+  assert.ok(pullList(list, repository, `${origin}${repo}/pulls`).pulls.every(pull => pull.defaultRef === null));
+});
+
+test("cache preserves optional default-branch refs and rejects malformed boundaries", async () => {
+  const local = storage();
+  const cache = new MetadataCache(local);
+  await cache.configure(true);
+  cache.set({ url: url(1) }, { ...refs, defaultRef: ref(repository, "staging") });
+  await cache.save();
+  const loaded = new MetadataCache(local);
+  await loaded.configure(true);
+  assert.equal(loaded.get({ url: url(1) }).defaultRef, ref(repository, "staging"));
+  assert.equal(loaded.merge({ [url(2)]: { ...refs, time: Date.now(), defaultRef: "invalid" } }).size, 0);
 });
 
 test("cache persists and reloads valid metadata, but rejects changed head SHAs", async () => {

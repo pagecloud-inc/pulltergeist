@@ -38,7 +38,7 @@ function manualStackPulls() {
   });
 }
 
-function listHtml({ legacy = false, items = pulls, hints = false, density = "default", timestamps = true, hintDates = true, nativeLayout = false } = {}) {
+function listHtml({ legacy = false, items = pulls, hints = false, density = "default", timestamps = true, hintDates = true, nativeLayout = false, defaultBranch = "staging" } = {}) {
   const rows = items.map(pull => {
     const author = pull.author ? `<a data-testid="author-filter-link" href="${repo}/pulls?q=author%3A${pull.author}">${pull.author}</a>` : "";
     const time = timestamps && pull.openedAt ? `<relative-time datetime="${pull.openedAt}">${pull.openedAt}</relative-time>` : "";
@@ -52,7 +52,7 @@ function listHtml({ legacy = false, items = pulls, hints = false, density = "def
       : `<li class="${className}" id="issue_${pull.number}">${content}</li>`;
   }).join("");
   const data = hints ? `<script type="application/json" data-target="react-app.embeddedData">${JSON.stringify({
-    payload: { repoPullsDashboardContentRoute: { results: items.map(pull => ({
+    payload: { repoPullsDashboardLayoutRoute: { repository: { ownerLogin: "pagecloud", name: "pagecloud", defaultBranch } }, repoPullsDashboardContentRoute: { results: items.map(pull => ({
       number: pull.number, repoNameWithOwner: repo.slice(1), headSha: pull.sha || null, stackSize: pull.stackSize || null, stackPosition: pull.stackPosition || null,
       author: { displayLogin: pull.author || null }, createdAt: hintDates ? pull.openedAt || null : null,
     })) } },
@@ -77,7 +77,7 @@ function listHtml({ legacy = false, items = pulls, hints = false, density = "def
 
 function pullPayload(pull, items = pulls) {
   const route = {
-    repository: { ownerLogin: "pagecloud", name: "pagecloud" },
+    repository: { ownerLogin: "pagecloud", name: "pagecloud", defaultBranch: "staging" },
     pullRequest: {
       number: pull.number, baseBranch: pull.base, headBranch: pull.head, headSha: pull.sha || null,
       headRepositoryOwnerLogin: "pagecloud", headRepositoryName: "pagecloud",

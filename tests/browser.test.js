@@ -7,6 +7,7 @@ const { repo, origin, pulls, chainPulls, multipleStackPulls, manualStackPulls, l
 async function fixture(context, options = {}) {
   const items = options.items || pulls;
   const page = await context.newPage();
+  if (options.beforeNavigate) await options.beforeNavigate(page);
   const cdp = await context.newCDPSession(page);
   let world;
   let resolveWorld;
@@ -362,6 +363,52 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
       assert.equal(prewarmLists.length, 1);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
+  });
+
+  await t.test("default-branch deploys stay standalone on cold and old-cache loads without hiding real stacks", async () => {
+    const items = [
+      { number: 99, title: "Release promotion", base: "master", head: "staging" },
+      ...Array.from({ length: 21 }, (_, i) => ({ number: i + 1, title: `Feature ${i + 1}`, base: "staging", head: `feature-${i + 1}` })),
+      { number: 22, title: "Feature follow-up", base: "feature-1", head: "followup" },
+      { number: 23, title: "Other", base: "off-page", head: "other" },
+      { number: 24, title: "Another", base: "off-page", head: "another" },
+    ].map(pull => ({ ...pull, author: "author", openedAt: "2026-01-01T12:00:00Z" }));
+    for (const mode of ["cold", "old-cache", "stale-default-cache", "legacy-old-cache"]) {
+      const metadata = Object.fromEntries(items.map(pull => [`${origin}${repo}/pull/${pull.number}`, {
+        base: JSON.stringify([repo.slice(1), pull.base]), head: JSON.stringify([repo.slice(1), pull.head]),
+        sha: null, time: Date.now(), author: pull.author, openedAt: pull.openedAt,
+        ...(mode === "stale-default-cache" ? { defaultRef: JSON.stringify([repo.slice(1), "master"]) } : {}),
+      }]));
+      const { page, calls, errors } = await fixture(context, {
+        items, hints: mode !== "legacy-old-cache", legacy: mode === "legacy-old-cache",
+        settings: mode === "cold" ? {} : { metadata },
+        beforeNavigate: page => page.addInitScript(() => {
+          window.deployWasGrouped = false;
+          new MutationObserver(() => {
+            for (const group of document.querySelectorAll(".pulltergeist-group")) {
+              if (group.dataset.stack.split(",").includes("99")) window.deployWasGrouped = true;
+            }
+          }).observe(document, { childList: true, subtree: true });
+        }),
+      });
+      try {
+        await ready(page);
+        assert.equal(await page.locator(".pulltergeist-group").count(), 1);
+        assert.equal(await page.locator(".pulltergeist-count").innerText(), "2 PRs");
+        assert.equal(await page.locator(".pulltergeist-title").innerText(), "Feature 1");
+        assert.equal(await page.locator("#issue_99").isVisible(), true);
+        assert.equal(await page.locator("#issue_99.pulltergeist-member, #issue_99.pulltergeist-collapsed").count(), 0);
+        assert.equal(await page.evaluate(() => window.deployWasGrouped), false);
+        assert.equal(calls.length, mode === "cold" ? 25 : mode === "legacy-old-cache" ? 1 : 0);
+        calls.length = 0;
+        await page.reload();
+        await ready(page);
+        assert.equal(calls.length, 0);
+        assert.equal(await page.locator(".pulltergeist-count").innerText(), "2 PRs");
+        assert.equal(await page.evaluate(() => window.deployWasGrouped), false);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    }
   });
 
   await t.test("unreadable metadata leaves its PR alone", async () => {

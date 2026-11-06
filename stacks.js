@@ -30,12 +30,18 @@
     return base && head ? { base, head } : null;
   }
 
+  function defaultBranchRef(repository, repo) {
+    return `${repository?.ownerLogin}/${repository?.name}`.toLowerCase() === repo.toLowerCase()
+      ? ref(repo, repository.defaultBranch) : null;
+  }
+
   function metadataFromPayload(payload, repo, number) {
     const route = payload?.payload?.pullRequestsLayoutRoute;
     const refs = refsFromRoute(route, repo);
     if (!refs || String(route.pullRequest.number) !== String(number)) return [];
     const details = openingDetails(route.pullRequest.author?.login, route.pullRequest.createdTime);
-    const result = [{ number: String(number), ...refs, sha: route.pullRequest.headSha || null, ...details }];
+    const defaultRef = defaultBranchRef(route.repository, repo);
+    const result = [{ number: String(number), ...refs, sha: route.pullRequest.headSha || null, defaultRef, ...details }];
     const stack = route.stack;
     if (!stack || `${stack.repositoryOwnerLogin}/${stack.repositoryName}`.toLowerCase() !== repo.toLowerCase()
       || !Array.isArray(stack.pulls) || stack.size !== stack.pulls.length
@@ -52,7 +58,7 @@
         || member.url?.toLowerCase() !== `/${repo}/pull/${id}`.toLowerCase()) return result;
       seen.add(id);
       heads.add(head);
-      derived.push({ number: id, base, head, sha: member.headOid || null });
+      derived.push({ number: id, base, head, sha: member.headOid || null, defaultRef });
       base = head;
     }
     const requested = derived.find(member => member.number === String(number));
@@ -111,8 +117,8 @@
     return refs ? [{ number: String(number), ...refs, sha: null }] : [];
   }
 
-  function listHints(document, repo) {
-    for (const payload of pagePayloads(document)) {
+  function listHints(document, repo, payloads = pagePayloads(document)) {
+    for (const payload of payloads) {
       const results = payload.payload?.repoPullsDashboardContentRoute?.results;
       if (!Array.isArray(results)) continue;
       return new Map(results.filter(item => item.repoNameWithOwner?.toLowerCase() === repo.toLowerCase())
@@ -126,7 +132,13 @@
   }
 
   function pullList(document, repo, baseUrl) {
-    const hints = listHints(document, repo);
+    const payloads = pagePayloads(document);
+    const hints = listHints(document, repo, payloads);
+    let defaultRef = null;
+    for (const payload of payloads) {
+      defaultRef = defaultBranchRef(payload.payload?.repoPullsDashboardLayoutRoute?.repository, repo);
+      if (defaultRef) break;
+    }
     const pulls = [];
     for (const row of document.querySelectorAll('.js-issue-row, [data-listview-component="items-list"] > li')) {
       const title = row.querySelector('[data-testid="listitem-title-link"], .js-navigation-open');
@@ -138,7 +150,7 @@
         url.hash = "";
         url.search = "";
         const hint = hints.get(match[2]);
-        pulls.push({ row, url: url.href, number: match[2], title: anchor.textContent.trim(), ...hint, ...rowOpeningDetails(row, hint) });
+        pulls.push({ row, url: url.href, number: match[2], title: anchor.textContent.trim(), defaultRef, ...hint, ...rowOpeningDetails(row, hint) });
         break;
       }
     }
@@ -160,9 +172,11 @@
   }
 
   function findStacks(pulls) {
+    const defaults = new Set(pulls.map(pull => pull.defaultRef).filter(Boolean));
+    if (!defaults.size) return [];
     const heads = new Map();
     for (const pull of pulls) {
-      if (!pull.head) continue;
+      if (!pull.head || defaults.has(pull.head)) continue;
       const matches = heads.get(pull.head) || [];
       matches.push(pull);
       heads.set(pull.head, matches);
@@ -170,6 +184,7 @@
     const parent = new Map();
     const children = new Map(pulls.map(pull => [pull, []]));
     for (const pull of pulls) {
+      if (defaults.has(pull.head)) continue;
       const candidates = heads.get(pull.base) || [];
       if (candidates.length !== 1 || candidates[0] === pull) continue;
       parent.set(pull, candidates[0]);
