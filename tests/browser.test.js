@@ -18,13 +18,13 @@ async function fixture(context, options = {}) {
     resolveWorld();
   });
   await cdp.send("Runtime.enable");
-  async function storage(method, argument) {
-    const result = await cdp.send("Runtime.evaluate", {
-      expression: `chrome.storage.local.${method}(${argument === undefined ? "" : JSON.stringify(argument)})`,
-      contextId: world, awaitPromise: true, returnByValue: true,
-    });
+  async function isolated(expression) {
+    const result = await cdp.send("Runtime.evaluate", { expression, contextId: world, awaitPromise: true, returnByValue: true });
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
     return result.result.value;
+  }
+  function storage(method, argument) {
+    return isolated(`chrome.storage.local.${method}(${argument === undefined ? "" : JSON.stringify(argument)})`);
   }
   async function waitForMetadata(minimum = 1) {
     const result = await cdp.send("Runtime.evaluate", {
@@ -66,7 +66,7 @@ async function fixture(context, options = {}) {
     }
     if (!match[2] && route.request().isNavigationRequest()) {
       const item = items.find(pull => pull.number === Number(match[1]));
-      await route.fulfill({ contentType: "text/html", body: `<!doctype html><html><body><main><a id="nav" href="${repo}/pulls">Pull requests</a>${pullHtml(item, options.metadataItems || items)}</main></body></html>` });
+      await route.fulfill({ contentType: "text/html", body: `<!doctype html><html><body><main><a id="nav" href="${repo}/pulls">Pull requests</a>${pullHtml(item, options.metadataItems || items, 0, options.defaultBranch)}</main></body></html>` });
       return;
     }
     calls.push(url.pathname);
@@ -81,11 +81,11 @@ async function fixture(context, options = {}) {
     const unsupported = typeof options.noLayout === "function" ? options.noLayout(item) : options.noLayout;
     const failure = typeof options.fail === "function" ? options.fail(item, layout) : options.fail === item.number;
     const status = failure ? options.status || 404 : layout && unsupported ? 404 : 200;
-    const payload = pullPayload(item, options.metadataItems || items);
+    const payload = pullPayload(item, options.metadataItems || items, options.defaultBranch);
     if (options.layoutRefsOnly) delete payload.payload.pullRequestsLayoutRoute.stack;
     await route.fulfill({
       status, contentType: layout ? "application/json" : "text/html",
-      body: layout ? JSON.stringify(payload) : pullHtml(item, options.metadataItems || items),
+      body: layout ? JSON.stringify(payload) : pullHtml(item, options.metadataItems || items, 0, options.defaultBranch),
     }).catch(() => {});
   });
   await page.goto(origin);
@@ -93,7 +93,7 @@ async function fixture(context, options = {}) {
   if (options.reset !== false) await storage("clear");
   if (options.settings) await storage("set", options.settings);
   await page.goto(`${origin}${options.startPath || `${repo}/pulls`}`);
-  return { page, calls, prewarmLists, errors, storage, waitForMetadata, maxActive: () => maxActive, maxHtmlActive: () => maxHtmlActive };
+  return { page, calls, prewarmLists, errors, storage, isolated, waitForMetadata, maxActive: () => maxActive, maxHtmlActive: () => maxHtmlActive };
 }
 
 async function ready(page) {
@@ -730,6 +730,66 @@ test("unpacked extension in Chromium", { timeout: 60000 }, async t => {
       assert.ok(calls.length <= 6);
       assert.equal(await visible(page, "#list > *"), 21);
       assert.match(await page.locator('.pulltergeist-toolbar [role="status"]').innerText(), /rate limit/);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("a rate limit cools down later lists in the same tab", async () => {
+    const items = chainPulls(1, 20);
+    const { page, calls, errors } = await fixture(context, { items, fail: items[0].number, status: 429 });
+    try {
+      await ready(page);
+      const before = calls.length;
+      await page.evaluate(html => {
+        const next = new DOMParser().parseFromString(html, "text/html").querySelector("#list");
+        document.querySelector("#list").replaceChildren(...next.childNodes);
+        history.pushState({}, "", "/pagecloud/pagecloud/pulls?q=author%3Ame");
+      }, listHtml({ items: items.slice(5, 12) }));
+      await page.waitForFunction(() => document.querySelectorAll("#list > *").length === 7);
+      await ready(page);
+      await page.waitForTimeout(100);
+      assert.equal(calls.length, before);
+      assert.match(await page.locator('.pulltergeist-toolbar [role="status"]').innerText(), /rate limit/);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("unknown default branches leave the list flat and say why without retrying", async () => {
+    const { page, calls, errors } = await fixture(context, { hints: true, defaultBranch: null });
+    try {
+      await ready(page);
+      await page.waitForTimeout(100);
+      assert.equal(await page.locator(".pulltergeist-group").count(), 0);
+      assert.equal(await visible(page, "#list > *"), 4);
+      assert.equal(calls.length, 4);
+      assert.match(await page.locator('.pulltergeist-toolbar [role="status"]').innerText(), /default branch unknown, left flat/);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  await t.test("PR pages ignore unrelated DOM churn but still learn new embedded payloads", async () => {
+    const items = chainPulls();
+    const { page, errors, isolated, waitForMetadata } = await fixture(context, { items, hints: true, startPath: `${repo}/pull/8` });
+    try {
+      await waitForMetadata(8);
+      await isolated(`(() => {
+        const proto = Pulltergeist.PageMetadataLearner.prototype;
+        const collect = proto.collect;
+        globalThis.collects = 0;
+        proto.collect = function (...args) { globalThis.collects++; return collect.apply(this, args); };
+      })()`);
+      await page.locator("main").evaluate(async main => {
+        for (let i = 0; i < 20; i++) {
+          main.append(document.createElement("span"));
+          await new Promise(requestAnimationFrame);
+        }
+      });
+      await page.waitForTimeout(50);
+      assert.equal(await isolated("collects"), 0);
+      await page.locator("main").evaluate((main, html) => main.insertAdjacentHTML("beforeend", html), pullHtml(items[0], items));
+      await page.waitForFunction(() => document.querySelectorAll('script[data-target="react-app.embeddedData"]').length === 2);
+      await page.waitForTimeout(50);
+      assert.ok(await isolated("collects") >= 1);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });

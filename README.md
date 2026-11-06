@@ -66,7 +66,7 @@ Opening a PR page passively learns verified metadata already embedded in that pa
 
 Optional prewarming waits for 200ms of hover or keyboard focus on a same-origin `/pulls` link, including canonical `/pulls/<author>` shortcuts. It preserves that link's filters/page, fetches only its target list, and runs at most six metadata jobs sequentially at low priority. It does not run during foreground loading and stops on navigation, visibility loss, leaving the link, opt-out, disabling grouping, or a five-second deadline. A 429 pauses further prewarming for one minute. No automatic crawling or periodic refresh occurs.
 
-Requests time out after 15 seconds. HTTP 429 stops the queue rather than continuing to hit a rate limit. Unreadable PRs remain visible and ungrouped.
+Requests time out after 15 seconds. HTTP 429 stops the queue and starts a one-minute cooldown for the tab, so new filters, pages, and prewarming do not immediately hit the limit again. Unreadable PRs remain visible and ungrouped.
 
 Initial controlled optimization pass, median of three runs with 25 PRs and 120ms metadata latency:
 
@@ -104,13 +104,13 @@ Cache entries are valid for five minutes and capped at 250 PRs. Expired entries 
 
 ## Limitations
 
-- Chrome/Edge only for now, not packaged for Firefox or Safari.
+- Chrome/Edge 116 or newer only for now, not packaged for Firefox or Safari.
 - GitHub's HTML and `/_layout` endpoint are internal, unstable interfaces. Unsupported lightweight responses fall back to HTML, but GitHub changes may require parser updates.
 - Stacks described only in PR text or implicit commit ancestry are not detected.
 - Retargeting without changing a head SHA can leave cached relationships stale for up to five minutes. Use **Refresh** after retargeting.
 - Rows are visually ordered with CSS rather than moved out of GitHub's React tree. Native keyboard-list navigation follows its original DOM order.
 - Missing opening dates are shown as **date unavailable**, never guessed.
-- Grouping requires verified repository default-branch metadata. If it is unavailable, rows stay flat. Old cache records can reuse the current list's repository metadata; legacy views may need one metadata read to recover that context.
+- Grouping requires verified repository default-branch metadata. If it is unavailable, rows stay flat and the status says **default branch unknown, left flat**. Old cache records can reuse the current list's repository metadata; legacy views may need one metadata read to recover that context.
 
 ## Development
 
@@ -120,6 +120,7 @@ Use Node.js 24 and npm:
 npm ci --ignore-scripts
 npx playwright install chromium
 npm run check
+npm run lint
 npm test
 ```
 
@@ -128,6 +129,9 @@ Tests load the actual unpacked extension in isolated headless Chromium, using lo
 ```sh
 # Regenerate PNG icons after editing icons/logo.svg
 npm run icons
+
+# Build dist/pulltergeist-<version>.zip from the files manifest.json references
+npm run package
 
 # Compare cold/warm stacks, navigation, row replacement, and passive/optional prewarming
 npm run benchmark
@@ -138,7 +142,7 @@ npm run profile
 npm run profile -- /path/to/older-extension https://github.com/cli/cli/pulls
 ```
 
-Benchmark and profile output go to ignored `test-results/benchmark.json` and `test-results/profile.json`. The live profiler uses a separate, unsigned-in Chromium profile, not your browser cookies. Fixture timings are not a guarantee of GitHub network latency. GitHub Actions runs syntax checks and browser/unit tests on pushes and pull requests.
+Benchmark and profile output go to ignored `test-results/benchmark.json` and `test-results/profile.json`. The live profiler uses a separate, unsigned-in Chromium profile, not your browser cookies. Fixture timings are not a guarantee of GitHub network latency. GitHub Actions runs syntax checks, lint, browser/unit tests, and packaging on pull requests and pushes to `main`.
 
 ## License
 

@@ -38,9 +38,10 @@
   }
 
   class ListPrewarmer {
-    constructor(cache, readMetadata, canWarm = () => true) {
+    constructor(cache, readMetadata, rateLimit, canWarm = () => true) {
       this.cache = cache;
       this.readMetadata = readMetadata;
+      this.rateLimit = rateLimit;
       this.canWarm = canWarm;
       this.events = null;
       this.controller = null;
@@ -48,7 +49,6 @@
       this.anchor = null;
       this.source = null;
       this.warmed = new Map();
-      this.cooldown = 0;
     }
 
     update(settings) {
@@ -82,7 +82,7 @@
 
     intent(target) {
       const anchor = target.closest?.("a[href]");
-      if (!anchor || anchor === this.anchor || document.hidden || !this.canWarm() || Date.now() < this.cooldown) return;
+      if (!anchor || anchor === this.anchor || document.hidden || !this.canWarm() || this.rateLimit.active) return;
       const url = new URL(anchor.href, location.href);
       const match = url.pathname.match(/^\/([^/]+\/[^/]+)\/pulls(?:\/[^/]+)?\/?$/);
       url.hash = "";
@@ -108,7 +108,7 @@
       const active = () => !signal.aborted && this.cache.epoch === epoch && this.source === source && location.href === source;
       try {
         const response = await fetch(url, { credentials: "same-origin", redirect: "error", priority: "low", signal });
-        if (response.status === 429) this.cooldown = Date.now() + 60000;
+        if (response.status === 429) this.rateLimit.trip();
         if (!response.ok || !active()) return;
         const document = new DOMParser().parseFromString(await response.text(), "text/html");
         const { list, pulls } = core.pullList(document, repo, url.href);
@@ -134,8 +134,8 @@
           this.warmed.set(url.href, Date.now());
           if (this.warmed.size > 20) this.warmed.delete(this.warmed.keys().next().value);
         }
-      } catch (error) {
-        if (error.status === 429) this.cooldown = Date.now() + 60000;
+      } catch {
+        // Failures, including rate limits recorded by readMetadata, end this warm-up.
       } finally {
         if (this.controller === controller) this.controller = null;
       }

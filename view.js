@@ -63,7 +63,7 @@
       const refresh = element("button", "", "Refresh");
       refresh.type = "button";
       refresh.title = "Discard cached metadata and re-read branch relationships";
-      refresh.addEventListener("click", () => onRefresh().catch(error => this.showError(error)));
+      refresh.addEventListener("click", () => onRefresh().catch(error => this.showError(error, "Could not refresh")));
       this.error = element("span", "pulltergeist-error");
       this.error.setAttribute("role", "alert");
       this.error.hidden = true;
@@ -110,12 +110,12 @@
       } catch (error) {
         const input = this.inputs.get(key);
         if (input) input.checked = this.settings[key];
-        this.showError(error);
+        this.showError(error, "Could not save setting");
       }
     }
 
-    showError(error) {
-      this.error.textContent = `Could not save/update: ${error.message}`;
+    showError(error, context) {
+      this.error.textContent = `${context}: ${error.message}`;
       this.error.hidden = false;
     }
 
@@ -196,9 +196,14 @@
       for (const [key, input] of this.inputs) input.checked = settings[key];
       const resolved = this.pulls.filter(pull => pull.done).length;
       const failed = this.pulls.filter(pull => pull.error).length;
+      const notes = [
+        failed && `${failed} unreadable, left alone`,
+        state.rateLimited ? "GitHub rate limit, retry Refresh later"
+          : !this.pulls.some(pull => pull.defaultRef) && "default branch unknown, left flat",
+      ].filter(Boolean);
       this.status.textContent = !settings.enabled ? "Flat list"
         : state.loading ? `Finding stacks… ${resolved}/${this.pulls.length}`
-        : `${state.stacks.length} ${state.stacks.length === 1 ? "stack" : "stacks"} on this page${failed ? ` · ${failed} unreadable, left alone` : ""}${state.rateLimited ? " · GitHub rate limit, retry Refresh later" : ""}`;
+        : [`${state.stacks.length} ${state.stacks.length === 1 ? "stack" : "stacks"} on this page`, ...notes].join(" · ");
       const stacks = settings.enabled && (settings.progressive || !state.loading) ? state.stacks : [];
       const signature = JSON.stringify([settings, this.list.getAttribute("data-density"), stacks.map(stack => [
         stack.root.title, stack.root.author, stack.root.openedAt, stack.members.map(({ pull }) => pull.number),
@@ -248,7 +253,10 @@
         } else metadata.append(element("span", "pulltergeist-opened", "date unavailable"));
         summary.append(heading, metadata);
         button.append(icon("stack-icon"), summary, chevron);
-        button.setAttribute("aria-label", `${stack.root.title}, pull request stack${settings.showCounts ? ` of ${stack.members.length} PRs` : ""}, base PR #${stack.root.number}${stack.root.author ? ` by ${stack.root.author}` : ""}, ${openedLabel}`);
+        const count = settings.showCounts ? ` of ${stack.members.length} PRs` : "";
+        const author = stack.root.author ? ` by ${stack.root.author}` : "";
+        button.setAttribute("aria-label",
+          `${stack.root.title}, pull request stack${count}, base PR #${stack.root.number}${author}, ${openedLabel}`);
         button.title = `Pulltergeist stack, ${settings.baseFirst ? "base PR first" : "original list order"}. Only PRs on this page are included.`;
         const members = settings.baseFirst ? stack.members
           : [...stack.members].sort((a, b) => this.pulls.indexOf(a.pull) - this.pulls.indexOf(b.pull));

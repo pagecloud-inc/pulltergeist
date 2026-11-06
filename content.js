@@ -1,12 +1,19 @@
 (() => {
-  const { findStacks, pullList, prioritizePulls, defaultSettings, normalizeSettings, MetadataCache, readMetadata, PageMetadataLearner, ListPrewarmer, PullListView } = globalThis.Pulltergeist;
+  const {
+    findStacks, pullList, prioritizePulls, defaultSettings, normalizeSettings,
+    MetadataCache, readMetadata, rateLimit, PageMetadataLearner, ListPrewarmer, PullListView,
+  } = globalThis.Pulltergeist;
+  const listPath = /^\/([^/]+\/[^/]+)\/pulls(?:\/[^/]+)?\/?$/;
+  const payloadSelector = 'script[data-target="react-app.embeddedData"]';
   const cache = new MetadataCache(chrome.storage.local);
   const learner = new PageMetadataLearner(cache);
-  const prewarmer = new ListPrewarmer(cache, readMetadata, () => !current?.loading && !current?.rateLimited);
+  const prewarmer = new ListPrewarmer(cache, readMetadata, rateLimit, () => !current?.loading && !current?.rateLimited);
   let settings = { ...defaultSettings };
   let current = null;
   let frame = null;
   let initialized = false;
+  let scannedHref = null;
+  const cacheError = error => current?.view.showError(error, "Could not save metadata cache");
 
   function observe() {
     observer.observe(document.body, {
@@ -102,7 +109,7 @@
       paint(state);
       if (!firstStackSaved && state.stacks.length) {
         firstStackSaved = cache.save().catch(error => {
-          if (valid(state)) state.view.showError(error);
+          if (valid(state)) cacheError(error);
         });
       }
     }
@@ -133,7 +140,7 @@
       if (!active(state)) return;
       await cache.save();
     } catch (error) {
-      state.view.showError(error);
+      cacheError(error);
     }
     state.loading = false;
     paint(state);
@@ -150,19 +157,23 @@
     scan(true);
   }
 
+  function samePull(a, b) {
+    return ["url", "title", "sha", "defaultRef", "author", "openedAt"].every(key => a[key] === b[key]);
+  }
+
   function scan(force = false) {
     if (!initialized) return;
+    scannedHref = location.href;
     if (prewarmer.source && prewarmer.source !== location.href) prewarmer.cancel();
-    if (learner.collect(document, location.href, settings.enabled)) void cache.save().catch(error => current?.view.showError(error));
-    const match = location.pathname.match(/^\/([^/]+\/[^/]+)\/pulls(?:\/[^/]+)?\/?$/);
+    if (learner.collect(document, location.href, settings.enabled)) void cache.save().catch(cacheError);
+    const match = location.pathname.match(listPath);
     const { list, pulls } = match ? listPulls(match[1]) : { pulls: [] };
     if (list?.getAttribute("aria-busy") === "true") {
       mutate(dispose);
       return;
     }
     if (!force && current?.url === location.href && pulls.length === current.pulls.length
-      && pulls.every((pull, i) => pull.url === current.pulls[i].url && pull.title === current.pulls[i].title
-        && pull.sha === current.pulls[i].sha && pull.defaultRef === current.pulls[i].defaultRef && pull.author === current.pulls[i].author && pull.openedAt === current.pulls[i].openedAt)) {
+      && pulls.every((pull, i) => samePull(pull, current.pulls[i]))) {
       if (list !== current.list || !current.view.toolbar.isConnected || pulls.some((pull, i) => pull.row !== current.pulls[i].row)) {
         mutate(() => {
           current.view.rebind(list, pulls);
@@ -183,7 +194,7 @@
       list, pulls, repo: match[1], url: location.href, controller: new AbortController(),
       stacks: [], expanded, loading: false,
       fastAvailable: settings.fastMetadata && list.matches('[data-listview-component="items-list"]'),
-      rateLimited: false,
+      rateLimited: rateLimit.active,
     };
     state.loading = settings.enabled && pendingPulls(state, new Set()).length > 0;
     current = state;
@@ -203,7 +214,15 @@
     });
   }
 
+  function touchesPayload(record) {
+    return record.target.matches?.(payloadSelector)
+      || [...record.addedNodes].some(node => node.matches?.(payloadSelector) || node.querySelector?.(payloadSelector));
+  }
+
   const observer = new MutationObserver(records => {
+    // Outside PR lists only navigation or a new embedded payload can change what a scan finds.
+    if (!current && location.href === scannedHref && !listPath.test(location.pathname)
+      && !records.some(touchesPayload)) return;
     if (current && current.url !== location.href) {
       schedule();
       return;
@@ -250,7 +269,7 @@
     if (previous.cacheMetadata !== settings.cacheMetadata) {
       void cache.configure(settings.cacheMetadata).then(() => {
         if (settings.cacheMetadata) return cache.save();
-      }).catch(error => current?.view.showError(error));
+      }).catch(cacheError);
     }
     prewarmer.update(settings);
     if (current && previous.autoExpand !== settings.autoExpand) current.expanded.clear();

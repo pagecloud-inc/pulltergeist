@@ -129,6 +129,18 @@
     }
   }
 
+  const rateLimit = {
+    until: 0,
+    get active() { return Date.now() < this.until; },
+    trip(cooldown = 60000) { this.until = Math.max(this.until, Date.now() + cooldown); },
+  };
+
+  function checkStatus(response, state) {
+    if (response.status !== 429) return;
+    rateLimit.trip();
+    state.rateLimited = true;
+  }
+
   const htmlRequests = new WeakMap();
 
   async function readHtml(pull, state, options) {
@@ -136,10 +148,10 @@
     const pending = htmlRequests.get(state);
     while (pending.size >= 3) await Promise.race([...pending].map(task => task.catch(() => {})));
     options.signal.throwIfAborted();
-    if (state.rateLimited) throw new GitHubError(429);
+    if (state.rateLimited || rateLimit.active) throw new GitHubError(429);
     const task = (async () => {
       const response = await fetch(pull.url, options);
-      if (response.status === 429) state.rateLimited = true;
+      checkStatus(response, state);
       if (!response.ok) throw new GitHubError(response.status);
       const document = new DOMParser().parseFromString(await response.text(), "text/html");
       const entries = core.metadataFromPage(document, state.repo, pull.number);
@@ -155,13 +167,14 @@
   }
 
   async function readMetadata(pull, state) {
+    if (rateLimit.active) throw new GitHubError(429);
     const options = {
       credentials: "same-origin", redirect: "error", priority: state.priority || "auto",
       signal: AbortSignal.any([state.controller.signal, AbortSignal.timeout(15000)]),
     };
     if (state.fastAvailable) {
       const response = await fetch(`${pull.url}/_layout`, { ...options, headers: { Accept: "application/json" } });
-      if (response.status === 429) state.rateLimited = true;
+      checkStatus(response, state);
       if ([401, 403, 429].includes(response.status) || response.status >= 500) throw new GitHubError(response.status);
       if (response.ok) {
         try {
@@ -176,7 +189,7 @@
     return readHtml(pull, state, options);
   }
 
-  const api = { MetadataCache, readMetadata };
+  const api = { MetadataCache, readMetadata, rateLimit };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(globalThis.Pulltergeist, api);
 })();

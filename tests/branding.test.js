@@ -5,6 +5,7 @@ const { test } = require("node:test");
 const manifest = require("../manifest.json");
 const pkg = require("../package.json");
 const lock = require("../package-lock.json");
+const { packageFiles } = require("../scripts/package.js");
 
 test("extension and package metadata use Pulltergeist branding", () => {
   assert.equal(manifest.name, "Pulltergeist");
@@ -15,6 +16,21 @@ test("extension and package metadata use Pulltergeist branding", () => {
   assert.equal(pkg.name, "pulltergeist");
   assert.equal(lock.name, pkg.name);
   assert.equal(lock.packages[""].name, pkg.name);
+});
+
+test("manifest, package, and lockfile versions match", () => {
+  assert.equal(manifest.version, pkg.version);
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[""].version, pkg.version);
+});
+
+test("store package includes every manifest-referenced file and nothing dev-only", () => {
+  const files = packageFiles(manifest);
+  for (const file of files) assert.ok(fs.existsSync(path.resolve(__dirname, "..", file)), file);
+  for (const file of [...manifest.content_scripts[0].js, ...manifest.content_scripts[0].css, "icons/icon-32.png", "LICENSE"]) {
+    assert.ok(files.includes(file), file);
+  }
+  assert.ok(files.every(file => !/^(tests|scripts|node_modules|tasks)\//.test(file) && file !== "package.json"));
 });
 
 test("manifest icons are valid PNGs in every required size", () => {

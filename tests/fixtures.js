@@ -75,9 +75,9 @@ function listHtml({ legacy = false, items = pulls, hints = false, density = "def
     </main></body></html>`;
 }
 
-function pullPayload(pull, items = pulls) {
+function pullPayload(pull, items = pulls, defaultBranch = "staging") {
   const route = {
-    repository: { ownerLogin: "pagecloud", name: "pagecloud", defaultBranch: "staging" },
+    repository: { ownerLogin: "pagecloud", name: "pagecloud", defaultBranch },
     pullRequest: {
       number: pull.number, baseBranch: pull.base, headBranch: pull.head, headSha: pull.sha || null,
       headRepositoryOwnerLogin: "pagecloud", headRepositoryName: "pagecloud",
@@ -94,8 +94,8 @@ function pullPayload(pull, items = pulls) {
   return { payload: { pullRequestsLayoutRoute: route } };
 }
 
-function pullHtml(pull, items = pulls, padding = 0) {
-  return `<script type="application/json" data-target="react-app.embeddedData">${JSON.stringify(pullPayload(pull, items))}</script><!--${"x".repeat(padding)}-->`;
+function pullHtml(pull, items = pulls, padding = 0, defaultBranch) {
+  return `<script type="application/json" data-target="react-app.embeddedData">${JSON.stringify(pullPayload(pull, items, defaultBranch))}</script><!--${"x".repeat(padding)}-->`;
 }
 
 module.exports = { repo, origin, pulls, chainPulls, multipleStackPulls, manualStackPulls, listHtml, pullPayload, pullHtml };

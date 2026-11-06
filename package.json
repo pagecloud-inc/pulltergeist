@@ -13,9 +13,14 @@
     "icons": "node scripts/render-icons.js",
     "benchmark": "node scripts/benchmark.js",
     "profile": "node scripts/profile.js",
-    "check": "node --check stacks.js && node --check settings.js && node --check metadata.js && node --check warming.js && node --check view.js && node --check content.js && node --check scripts/render-icons.js && node --check scripts/benchmark.js && node --check scripts/profile.js"
+    "check": "node --check stacks.js && node --check settings.js && node --check metadata.js && node --check warming.js && node --check view.js && node --check content.js && node --check scripts/render-icons.js && node --check scripts/benchmark.js && node --check scripts/profile.js && node --check scripts/package.js",
+    "lint": "eslint .",
+    "package": "node scripts/package.js"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0",
     "jsdom": "^27.0.0",
     "playwright": "^1.56.0"
   }
