@@ -118,13 +118,12 @@ Use Node.js 24 and npm:
 
 ```sh
 npm ci --ignore-scripts
-npx playwright install chromium
 npm run check
 npm run lint
 npm test
 ```
 
-Tests load the actual unpacked extension in isolated headless Chromium, using local GitHub fixtures rather than a real account. Coverage includes grouping, forks, cycles, metadata validation, settings, privacy/cache races, filters, pagination, density changes, native row sizing, checkbox alignment, resizing, keyboard/focus behavior, and navigation.
+Unit tests run in Node with jsdom fixtures and cover grouping, forks, cycles, default-branch boundaries, metadata validation, settings, cache/privacy races, passive learning, and packaging. There are no automated browser tests. Verify UI, layout, density, and navigation behavior manually by loading the unpacked extension in Chrome on real GitHub PR lists.
 
 ```sh
 # Regenerate PNG icons after editing icons/logo.svg
@@ -132,17 +131,9 @@ npm run icons
 
 # Build dist/pulltergeist-<version>.zip from the files manifest.json references
 npm run package
-
-# Compare cold/warm stacks, navigation, row replacement, and passive/optional prewarming
-npm run benchmark
-npm run benchmark -- /path/to/older-extension
-
-# Profile live public GitHub startup, requests, and sampled extension CPU
-npm run profile
-npm run profile -- /path/to/older-extension https://github.com/cli/cli/pulls
 ```
 
-Benchmark and profile output go to ignored `test-results/benchmark.json` and `test-results/profile.json`. The live profiler uses a separate, unsigned-in Chromium profile, not your browser cookies. Fixture timings are not a guarantee of GitHub network latency. GitHub Actions runs syntax checks, lint, browser/unit tests, and packaging on pull requests and pushes to `main`.
+GitHub Actions runs syntax checks, lint, unit tests, and packaging on pull requests and pushes to `main`.
 
 ## License
 
